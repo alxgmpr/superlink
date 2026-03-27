@@ -1,8 +1,6 @@
-# Firmware images (copyrighted, don't distribute)
-firmware/dumps/*.bin
-firmware/dumps/*.img
-firmware/dumps/*.tar
-firmware/dumps/*.gz
+# Firmware (copyrighted, large, don't distribute)
+firmware/dumps/
+firmware/analysis/
 
 # IQ captures (large files)
 *.raw
@@ -11,16 +9,13 @@ firmware/dumps/*.gz
 *.cf32
 *.cs16
 
-# Ghidra/IDA projects
-firmware/analysis/*.gzf
-firmware/analysis/*.rep/
-firmware/analysis/*.idb
-firmware/analysis/*.i64
-firmware/analysis/*.til
-firmware/analysis/*.id0
-firmware/analysis/*.id1
-firmware/analysis/*.id2
-firmware/analysis/*.nam
+# Ghidra/IDA projects (if outside firmware/analysis)
+*.gzf
+*.gpr
+*.rep/
+*.idb
+*.i64
+*.lock
 
 # Build artifacts
 build/
