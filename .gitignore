@@ -1,0 +1,47 @@
+# Firmware images (copyrighted, don't distribute)
+firmware/dumps/*.bin
+firmware/dumps/*.img
+firmware/dumps/*.tar
+firmware/dumps/*.gz
+
+# IQ captures (large files)
+*.raw
+*.iq
+*.cfile
+*.cf32
+*.cs16
+
+# Ghidra/IDA projects
+firmware/analysis/*.gzf
+firmware/analysis/*.rep/
+firmware/analysis/*.idb
+firmware/analysis/*.i64
+firmware/analysis/*.til
+firmware/analysis/*.id0
+firmware/analysis/*.id1
+firmware/analysis/*.id2
+firmware/analysis/*.nam
+
+# Build artifacts
+build/
+dist/
+*.o
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
