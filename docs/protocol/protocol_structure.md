@@ -168,9 +168,35 @@ CH7 (916.8) → CH15 (924.0)
 CH8 (917.0) → CH16 (924.6)
 ```
 
+## Sync Word (confirmed via Ghidra decompilation)
+
+The sync word configuration function (`FUN_0008c7d8` = `sx1302_lora_syncword`) was
+decompiled from the lorabrd binary. With `lorawan_public=false`, ALL modems
+(multi-SF, standard, and service/SF5) use:
+
+- **peak1_pos = 2, peak2_pos = 4**
+- **SX1262 sync word register value: `0x1424`**
+- **This is the standard private LoRa sync word (shorthand: `0x12`)**
+
+Ubiquiti did NOT customize the sync word. Any LoRa radio in private mode
+(non-LoRaWAN) will be able to receive SuperLink packets.
+
+### Register writes (from decompiled sx1302_lora_syncword):
+```
+lgw_reg_w(0x23E, 2)  // multi-SF demod peak1
+lgw_reg_w(0x23F, 4)  // multi-SF demod peak2
+lgw_reg_w(0x240, 2)  // multi-SF demod peak1 (second set)
+lgw_reg_w(0x241, 4)  // multi-SF demod peak2 (second set)
+lgw_reg_w(0x242, 2)  // standard modem peak1 (private: 2, public: 6)
+lgw_reg_w(0x243, 4)  // standard modem peak2 (private: 4, public: 8)
+lgw_reg_w(0x3A4, 2)  // service modem peak1 (SF5/SF6)
+lgw_reg_w(0x3A5, 4)  // service modem peak2 (SF5/SF6)
+```
+
 ## Key Parameters
 - **Spreading Factor: SF5** (very fast, short range — unusual, not standard LoRaWAN)
-- **lorawan_public: false** (custom sync word, not LoRaWAN)
+- **Sync Word: 0x1424 (standard private LoRa)** — confirmed via decompilation
+- **lorawan_public: false**
 - **Beacon delay: 240,000,000 μs = 240 seconds**
 - **DL retry delay: 4,000,000 μs = 4 seconds**
 - **Uplink dwell period: 20 seconds per channel**
