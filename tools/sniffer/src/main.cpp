@@ -12,6 +12,8 @@
 #include <Arduino.h>
 #include <RadioLib.h>
 #include <SPI.h>
+#include <Wire.h>
+#include <U8g2lib.h>
 
 // Forward declarations
 void handlePacket();
@@ -21,6 +23,10 @@ String getChannelName();
 void printConfig();
 void printStatus();
 void printHelp();
+void updateDisplay();
+
+// Heltec V3 OLED: SSD1306 128x64, I2C on SDA=17, SCL=18, RST=21
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, 21, 18, 17);
 
 // Heltec V3 SX1262 pins (from pins_arduino.h)
 SX1262 radio = new Module(8, 14, 12, 13);  // SS, DIO1, RST, BUSY
@@ -67,7 +73,16 @@ float singleBW = 125.0;
 volatile bool rxFlag = false;
 int currentChannel = 0;
 unsigned long lastHopTime = 0;
+unsigned long lastDisplayTime = 0;
 unsigned long totalPackets = 0;
+
+// Last packet info for display
+float lastRSSI = 0;
+float lastSNR = 0;
+int lastLen = 0;
+char lastMAC[18] = "---";
+uint8_t lastMctrl = 0;
+unsigned long lastPktTime = 0;
 
 void setRxFlag(void) { rxFlag = true; }
 
@@ -86,10 +101,19 @@ void setup() {
   Serial.println("========================================");
   Serial.println();
 
-  // Heltec V3: enable Vext power
+  // Heltec V3: enable Vext power (powers both OLED and LoRa)
   pinMode(36, OUTPUT);
   digitalWrite(36, LOW);
   delay(100);
+
+  // Init OLED display
+  display.begin();
+  display.setFont(u8g2_font_6x10_tf);
+  display.clearBuffer();
+  display.drawStr(16, 28, "OpenSuperLink");
+  display.drawStr(24, 42, "Sniffer v0.1");
+  display.sendBuffer();
+  delay(500);
 
   // Reset LoRa module
   pinMode(12, OUTPUT);
@@ -159,6 +183,12 @@ void loop() {
   if (Serial.available()) {
     handleCommand(Serial.read());
   }
+
+  // Update display every 250ms
+  if (millis() - lastDisplayTime > 250) {
+    updateDisplay();
+    lastDisplayTime = millis();
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -185,6 +215,17 @@ void handlePacket() {
   totalPackets++;
   float rssi = radio.getRSSI();
   float snr = radio.getSNR();
+  lastRSSI = rssi;
+  lastSNR = snr;
+  lastLen = len;
+  lastPktTime = millis();
+
+  // Save MAC for display
+  if (len >= 8) {
+    snprintf(lastMAC, sizeof(lastMAC), "%02X:%02X:%02X:%02X:%02X:%02X",
+      buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+    lastMctrl = buf[0];
+  }
 
   Serial.print("[PKT #");
   Serial.print(totalPackets);
@@ -362,4 +403,75 @@ void printHelp() {
   Serial.println("  a     Scan ALL channels   1-8   Park on UL CH 1-8");
   Serial.println("  b     Park on beacon      s     Status");
   Serial.println();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// OLED Display
+// ═══════════════════════════════════════════════════════════════
+
+void updateDisplay() {
+  char line[32];
+  display.clearBuffer();
+
+  // Row 1: Title
+  display.setFont(u8g2_font_6x10_tf);
+  display.drawStr(0, 10, "SuperLink Sniffer");
+
+  // Row 2: Current channel + scan mode
+  float freq;
+  const char* mode;
+  if (scanMode == SCAN_UL_ONLY) {
+    freq = UL_CHANNELS[currentChannel];
+    mode = "UL";
+  } else if (scanMode == SCAN_DL_ONLY) {
+    freq = DL_CHANNELS[currentChannel];
+    mode = "DL";
+  } else if (scanMode == SCAN_SINGLE) {
+    freq = singleFreq;
+    mode = "PARK";
+  } else {
+    freq = currentChannel < NUM_UL_CHANNELS ? UL_CHANNELS[currentChannel] :
+           currentChannel < NUM_UL_CHANNELS + NUM_DL_CHANNELS ?
+           DL_CHANNELS[currentChannel - NUM_UL_CHANNELS] : BEACON_CHANNEL;
+    mode = "ALL";
+  }
+  snprintf(line, sizeof(line), "%s %.1fMHz SF%d", mode, freq, SUPERLINK_SF);
+  display.drawStr(0, 22, line);
+
+  // Row 3: Packet count + uptime
+  snprintf(line, sizeof(line), "PKT:%-5lu  %lus", totalPackets, millis()/1000);
+  display.drawStr(0, 34, line);
+
+  // Divider
+  display.drawHLine(0, 37, 128);
+
+  if (totalPackets > 0) {
+    // Row 4: Last packet RSSI/SNR
+    snprintf(line, sizeof(line), "RSSI:%.0f SNR:%.1f L:%d", lastRSSI, lastSNR, lastLen);
+    display.drawStr(0, 49, line);
+
+    // Row 5: Last MAC
+    snprintf(line, sizeof(line), "%s", lastMAC);
+    display.drawStr(0, 61, line);
+
+    // Age indicator
+    unsigned long age = (millis() - lastPktTime) / 1000;
+    if (age < 60) {
+      snprintf(line, sizeof(line), "%lus", age);
+    } else {
+      snprintf(line, sizeof(line), "%lum", age / 60);
+    }
+    display.drawStr(110, 61, line);
+  } else {
+    // No packets yet
+    display.drawStr(12, 52, "Listening...");
+
+    // Scanning animation
+    int dot = (millis() / 500) % 4;
+    for (int i = 0; i < dot; i++) {
+      display.drawStr(84 + i*6, 52, ".");
+    }
+  }
+
+  display.sendBuffer();
 }
