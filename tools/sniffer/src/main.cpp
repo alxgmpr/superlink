@@ -354,6 +354,23 @@ void handleCommand(char cmd) {
       Serial.printf("[CMD] Parked on UL CH%d (%.1f MHz)\n", ch+1, singleFreq);
       break;
     }
+    case '!': case '@': case '#': case '$':
+    case '%': case '^': case '&': case '*': {
+      // Shift+1-8 for DL channels (!, @, #, $, %, ^, &, *)
+      const char shiftMap[] = "!@#$%^&*";
+      int ch = -1;
+      for (int i = 0; i < 8; i++) { if (cmd == shiftMap[i]) { ch = i; break; } }
+      if (ch < 0) break;
+      scanMode = SCAN_SINGLE; currentChannel = ch;
+      singleFreq = DL_CHANNELS[ch];
+      singleBW = SUPERLINK_BW_DL;
+      radio.standby();
+      radio.setFrequency(singleFreq);
+      radio.setBandwidth(singleBW);
+      radio.startReceive();
+      Serial.printf("[CMD] Parked on DL CH%d (%.1f MHz, 500kHz)\n", ch+9, singleFreq);
+      break;
+    }
     case 'b':
       scanMode = SCAN_SINGLE;
       singleFreq = BEACON_CHANNEL;
@@ -415,8 +432,9 @@ void printStatus() {
 void printHelp() {
   Serial.println("\nCommands:");
   Serial.println("  u     Scan UL channels   d     Scan DL channels");
-  Serial.println("  a     Scan ALL channels   1-8   Park on UL CH 1-8");
-  Serial.println("  b     Park on beacon      s     Status");
+  Serial.println("  a     Scan ALL channels   b     Park on beacon");
+  Serial.println("  1-8   Park UL CH 1-8     !@#$%^&*  Park DL CH 9-16");
+  Serial.println("  s     Status             (Shift+1-8 for DL channels)");
   Serial.println();
 }
 
