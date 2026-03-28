@@ -345,17 +345,21 @@ void handleCommand(char cmd) {
     case '5': case '6': case '7': case '8': {
       int ch = cmd - '1';
       scanMode = SCAN_SINGLE; currentChannel = ch;
+      singleFreq = UL_CHANNELS[ch];
+      singleBW = SUPERLINK_BW_UL;
       radio.standby();
-      radio.setFrequency(UL_CHANNELS[ch]);
-      radio.setBandwidth(SUPERLINK_BW_UL);
+      radio.setFrequency(singleFreq);
+      radio.setBandwidth(singleBW);
       radio.startReceive();
-      Serial.printf("[CMD] Parked on UL CH%d (%.1f MHz)\n", ch+1, UL_CHANNELS[ch]);
+      Serial.printf("[CMD] Parked on UL CH%d (%.1f MHz)\n", ch+1, singleFreq);
       break;
     }
     case 'b':
       scanMode = SCAN_SINGLE;
-      radio.standby(); radio.setFrequency(BEACON_CHANNEL);
-      radio.setBandwidth(SUPERLINK_BW_DL); radio.startReceive();
+      singleFreq = BEACON_CHANNEL;
+      singleBW = SUPERLINK_BW_DL;
+      radio.standby(); radio.setFrequency(singleFreq);
+      radio.setBandwidth(singleBW); radio.startReceive();
       Serial.printf("[CMD] Parked on Beacon (%.1f MHz)\n", BEACON_CHANNEL);
       break;
     case 's': printStatus(); break;
@@ -369,14 +373,25 @@ void handleCommand(char cmd) {
 
 String getChannelName() {
   char buf[32];
-  if (scanMode == SCAN_UL_ONLY)
-    snprintf(buf, sizeof(buf), "UL%d %.1fMHz", currentChannel+1, UL_CHANNELS[currentChannel]);
-  else if (scanMode == SCAN_DL_ONLY)
-    snprintf(buf, sizeof(buf), "DL%d %.1fMHz", currentChannel+9, DL_CHANNELS[currentChannel]);
-  else if (scanMode == SCAN_SINGLE)
-    snprintf(buf, sizeof(buf), "%.1fMHz", singleFreq);
-  else
-    snprintf(buf, sizeof(buf), "CH%d", currentChannel+1);
+  switch (scanMode) {
+    case SCAN_UL_ONLY:
+      snprintf(buf, sizeof(buf), "UL CH%d %.1fMHz", currentChannel+1, UL_CHANNELS[currentChannel]);
+      break;
+    case SCAN_DL_ONLY:
+      snprintf(buf, sizeof(buf), "DL CH%d %.1fMHz", currentChannel+9, DL_CHANNELS[currentChannel]);
+      break;
+    case SCAN_SINGLE:
+      snprintf(buf, sizeof(buf), "PARK %.1fMHz", singleFreq);
+      break;
+    case SCAN_ALL:
+      if (currentChannel < NUM_UL_CHANNELS)
+        snprintf(buf, sizeof(buf), "UL CH%d %.1fMHz", currentChannel+1, UL_CHANNELS[currentChannel]);
+      else if (currentChannel < NUM_UL_CHANNELS + NUM_DL_CHANNELS)
+        snprintf(buf, sizeof(buf), "DL CH%d %.1fMHz", currentChannel+1, DL_CHANNELS[currentChannel-NUM_UL_CHANNELS]);
+      else
+        snprintf(buf, sizeof(buf), "BCN %.1fMHz", BEACON_CHANNEL);
+      break;
+  }
   return String(buf);
 }
 
@@ -412,65 +427,107 @@ void printHelp() {
 void updateDisplay() {
   char line[32];
   display.clearBuffer();
-
-  // Row 1: Title
   display.setFont(u8g2_font_6x10_tf);
-  display.drawStr(0, 10, "SuperLink Sniffer");
 
-  // Row 2: Current channel + scan mode
+  // Row 1: Mode + channel indicator
   float freq;
-  const char* mode;
-  if (scanMode == SCAN_UL_ONLY) {
-    freq = UL_CHANNELS[currentChannel];
-    mode = "UL";
-  } else if (scanMode == SCAN_DL_ONLY) {
-    freq = DL_CHANNELS[currentChannel];
-    mode = "DL";
-  } else if (scanMode == SCAN_SINGLE) {
-    freq = singleFreq;
-    mode = "PARK";
-  } else {
-    freq = currentChannel < NUM_UL_CHANNELS ? UL_CHANNELS[currentChannel] :
-           currentChannel < NUM_UL_CHANNELS + NUM_DL_CHANNELS ?
-           DL_CHANNELS[currentChannel - NUM_UL_CHANNELS] : BEACON_CHANNEL;
-    mode = "ALL";
+  int chNum = 0;
+  const char* dir = "";
+
+  switch (scanMode) {
+    case SCAN_UL_ONLY:
+      freq = UL_CHANNELS[currentChannel];
+      chNum = currentChannel + 1;
+      dir = "UL";
+      snprintf(line, sizeof(line), "SCAN UL  CH%d/8", chNum);
+      break;
+    case SCAN_DL_ONLY:
+      freq = DL_CHANNELS[currentChannel];
+      chNum = currentChannel + 9;
+      dir = "DL";
+      snprintf(line, sizeof(line), "SCAN DL  CH%d/8", currentChannel + 1);
+      break;
+    case SCAN_ALL: {
+      int total = NUM_UL_CHANNELS + NUM_DL_CHANNELS + 1;
+      if (currentChannel < NUM_UL_CHANNELS) {
+        freq = UL_CHANNELS[currentChannel];
+        chNum = currentChannel + 1;
+        dir = "UL";
+      } else if (currentChannel < NUM_UL_CHANNELS + NUM_DL_CHANNELS) {
+        freq = DL_CHANNELS[currentChannel - NUM_UL_CHANNELS];
+        chNum = currentChannel + 1;
+        dir = "DL";
+      } else {
+        freq = BEACON_CHANNEL;
+        chNum = 17;
+        dir = "BCN";
+      }
+      snprintf(line, sizeof(line), "SCAN ALL %d/%d", currentChannel + 1, total);
+      break;
+    }
+    case SCAN_SINGLE:
+      freq = singleFreq;
+      if (singleBW < 200) {
+        chNum = currentChannel + 1;
+        dir = "UL";
+      } else if (freq > 927.0) {
+        chNum = 17;
+        dir = "BCN";
+      } else {
+        chNum = currentChannel + 9;
+        dir = "DL";
+      }
+      snprintf(line, sizeof(line), "PARK %s CH%d", dir, chNum);
+      break;
   }
-  snprintf(line, sizeof(line), "%s %.1fMHz SF%d", mode, freq, SUPERLINK_SF);
+  display.drawStr(0, 10, line);
+
+  // Row 2: Frequency + radio params
+  snprintf(line, sizeof(line), "%.1fMHz %s SF%d %s",
+    freq, singleBW < 200 || scanMode != SCAN_SINGLE ? "125k" : "500k",
+    SUPERLINK_SF, dir);
   display.drawStr(0, 22, line);
 
   // Row 3: Packet count + uptime
-  snprintf(line, sizeof(line), "PKT:%-5lu  %lus", totalPackets, millis()/1000);
+  unsigned long up = millis() / 1000;
+  if (up < 3600) {
+    snprintf(line, sizeof(line), "PKT:%-5lu     %lum%02lus", totalPackets, up/60, up%60);
+  } else {
+    snprintf(line, sizeof(line), "PKT:%-5lu    %luh%02lum", totalPackets, up/3600, (up%3600)/60);
+  }
   display.drawStr(0, 34, line);
 
   // Divider
   display.drawHLine(0, 37, 128);
 
   if (totalPackets > 0) {
-    // Row 4: Last packet RSSI/SNR
+    // Row 4: Last packet info
     snprintf(line, sizeof(line), "RSSI:%.0f SNR:%.1f L:%d", lastRSSI, lastSNR, lastLen);
     display.drawStr(0, 49, line);
 
-    // Row 5: Last MAC
-    snprintf(line, sizeof(line), "%s", lastMAC);
-    display.drawStr(0, 61, line);
-
-    // Age indicator
+    // Row 5: Last MAC + age
     unsigned long age = (millis() - lastPktTime) / 1000;
-    if (age < 60) {
-      snprintf(line, sizeof(line), "%lus", age);
-    } else {
-      snprintf(line, sizeof(line), "%lum", age / 60);
-    }
-    display.drawStr(110, 61, line);
+    char ageBuf[8];
+    if (age < 60) snprintf(ageBuf, sizeof(ageBuf), "%lus", age);
+    else if (age < 3600) snprintf(ageBuf, sizeof(ageBuf), "%lum", age/60);
+    else snprintf(ageBuf, sizeof(ageBuf), "%luh", age/3600);
+    snprintf(line, sizeof(line), "%s %s", lastMAC, ageBuf);
+    display.drawStr(0, 61, line);
   } else {
-    // No packets yet
-    display.drawStr(12, 52, "Listening...");
-
     // Scanning animation
-    int dot = (millis() / 500) % 4;
-    for (int i = 0; i < dot; i++) {
-      display.drawStr(84 + i*6, 52, ".");
-    }
+    const char* frames[] = {"|", "/", "-", "\\"};
+    int frame = (millis() / 250) % 4;
+    snprintf(line, sizeof(line), "Listening... %s", frames[frame]);
+    display.drawStr(12, 52, line);
+  }
+
+  // Channel hop progress bar (bottom pixel row) for scanning modes
+  if (scanMode != SCAN_SINGLE) {
+    int total = (scanMode == SCAN_UL_ONLY) ? NUM_UL_CHANNELS :
+                (scanMode == SCAN_DL_ONLY) ? NUM_DL_CHANNELS :
+                NUM_UL_CHANNELS + NUM_DL_CHANNELS + 1;
+    int barWidth = (128 * (currentChannel + 1)) / total;
+    display.drawBox(0, 63, barWidth, 1);
   }
 
   display.sendBuffer();
