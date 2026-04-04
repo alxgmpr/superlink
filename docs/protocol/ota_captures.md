@@ -40,24 +40,67 @@ Mctrl=0xE0 (SecureHeader) SeqHi=0x40
 - DL uses the paired channel (UL CH1→DL CH9, etc.)
 - RSSI: -13 to -43 dBm
 
-### Channel Hopping Behavior
-- Sensor hops across all 8 UL channels
-- Approximate TX interval: ~250ms per hop, ~2s full cycle
-- Gateway responds on paired DL channel
-- Hopping pattern appears pseudo-random or sequential (needs more data)
+### Channel Hopping Behavior (CONFIRMED)
+- **Sensor hops sequentially** through all 8 UL channels: CH1→CH2→...→CH8→CH1
+- TX interval: ~2s per frame, one channel per frame
+- Full cycle across 8 channels: ~16 seconds
+- Gateway receives all 8 channels simultaneously (SX1302 has 8 parallel demodulators)
+- Gateway responds on the paired DL channel for whichever UL channel was used
+- No beacon sync observed — hopping is self-clocked round-robin
+- `tbl: 2` in session setup selects the hopping table; `chs: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17]` assigns all channels
+
+**Evidence from gateway logs** (consecutive packets during session key exchange):
+```
+ch: 3 → ch: 4 → ch: 5   (sequential hopping during setup)
+```
+
+**Implication for sniffing**: A single-channel SX1262 sniffer (Heltec) can only capture
+~1/8 of packets when parked. An SX1302/SX1303 concentrator board (e.g. RAK2287) would
+receive all 8 UL channels simultaneously, matching the gateway's capability.
 
 ### Sequence Number Analysis
-- SeqHi (byte 8): Frame counter, shared UL+DL, monotonically increasing
-- SeqLo (byte 9): Varies per frame, likely crypto nonce component
-- When parked on CH1: SeqHi increments by 2 between consecutive captures
+- **SeqHi** (byte 8): True frame counter, increments by exactly 1 per UL packet (confirmed via gateway LD_PRELOAD hook capturing complete stream)
+- **SeqLo** (byte 9): Varies per frame — appears pseudo-random, likely crypto nonce component (NOT channel index)
+- **DL SeqHi**: Independent frame counter, increments by 1 per DL packet
+- **DL SeqLo**: Sequential (0x98, 0x99, 0x9A...) — independent DL counter
+- **Nonce counter**: Last byte of the 24-byte XSalsa20 nonce increments 1:1 with packets within a session (separate from SeqHi)
+
+### Decrypted Payload Format
+
+**Standard UL data (5 bytes)**: `0C 00 0F 00 XX`
+| Byte | Value | Meaning |
+|------|-------|---------|
+| 0    | 0x0C  | Type (sensor report) |
+| 1    | 0x00  | Flags |
+| 2    | 0x0F  | Command (door state) |
+| 3    | 0x00  | Sub-command |
+| 4    | 0x00/0x01 | **0x00 = OPEN, 0x01 = CLOSED** |
+
+**Extended UL data (22 bytes)**: Sent periodically (every ~16 frames), contains sensor metadata:
+```
+0C 00 01 00 00 00 42 38 02 00 64 DA 07 03 00 60 0C 16 00 0F 00 00
+│     │        │     │     │  │  │     │     │     │     └─ door state
+│     │        │     │     │  │  │     │     │     └─ field8 (22)
+│     │        │     │     │  │  │     │     └─ field7 (3168)
+│     │        │     │     │  │  │     └─ field6 (3)
+│     │        │     │     │  │  └─ field5 (varies: 2010, 2023, 1764) ← possible temp?
+│     │        │     │     │  └─ field4=100 (0x64) ← battery %?
+│     │        │     │     └─ field3 (2)
+│     │        │     └─ field2 (varies: 14402, 25667, 36932) ← uptime/counter?
+│     │        └─ field1 (0)
+│     └─ subtype=0x01 (extended report)
+└─ type=0x0C
+```
+
+**DL response (2 bytes after MIC)**: Varies per packet — purpose unknown (ACK? channel assignment? timing info?)
 
 ### Observations
 1. All observed data frames use Mctrl=0xE0 (SecureHeader)
-2. No beacon frames captured yet (may need longer observation on CH17/927.6 MHz)
+2. No beacon frames captured on CH17/927.6 MHz after 5 min observation — gateway may not broadcast beacons (Class A only?)
 3. No plaintext connection frames observed (pairing already complete)
-4. Payload is encrypted — 5 bytes UL, 2 bytes DL for standard data
-5. MIC (4 bytes) = BLAKE2b integrity check covering header + payload
-6. The MAC address in DL frames is the **sensor** MAC, not the gateway MAC
+4. MIC (4 bytes) = BLAKE2b integrity check covering header + payload
+5. The MAC address in DL frames is the **sensor** MAC, not the gateway MAC
+6. Session keys are ephemeral — renegotiated each time lorabrd restarts (DH key exchange)
 
 ### Raw Capture Files
 - `captures/capture_preamble12_20260404.log` — First successful capture (scan all)
