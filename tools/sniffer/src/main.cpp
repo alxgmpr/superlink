@@ -59,7 +59,7 @@ const float DL_CHANNELS[] = {
 // Sniffer Configuration
 // ═══════════════════════════════════════════════════════════════
 
-#define DWELL_TIME_MS  2000
+#define DWELL_TIME_MS  500   // Fast scan for better capture rate
 
 enum ScanMode { SCAN_UL_ONLY, SCAN_DL_ONLY, SCAN_ALL, SCAN_SINGLE };
 ScanMode scanMode = SCAN_UL_ONLY;
@@ -135,7 +135,7 @@ void setup() {
     SUPERLINK_CR,          // coding rate 4/x
     SUPERLINK_SYNC_WORD,   // sync word
     10,                    // output power dBm
-    8,                     // preamble length
+    12,                    // preamble length (SF5/SF6 use 12 per SX1302 HAL)
     1.6,                   // TCXO voltage (Heltec V3 = 1.6V)
     false                  // use LDO
   );
@@ -147,7 +147,7 @@ void setup() {
   }
   Serial.println("OK");
 
-  radio.setCRC(true);
+  radio.setCRC(true);   // Keep CRC on for proper framing, but accept failures
   radio.setDio1Action(setRxFlag);
 
   printConfig();
@@ -205,7 +205,8 @@ void handlePacket() {
   }
 
   int state = radio.readData(buf, len);
-  if (state != RADIOLIB_ERR_NONE) {
+  bool crcOk = (state == RADIOLIB_ERR_NONE);
+  if (state != RADIOLIB_ERR_NONE && state != RADIOLIB_ERR_CRC_MISMATCH) {
     Serial.print("[RX] readData error: ");
     Serial.println(state);
     radio.startReceive();
@@ -229,6 +230,8 @@ void handlePacket() {
 
   Serial.print("[PKT #");
   Serial.print(totalPackets);
+  Serial.print(" t=");
+  Serial.print(millis());
   Serial.print("] ");
   Serial.print(getChannelName());
   Serial.print(" | len=");
@@ -236,7 +239,9 @@ void handlePacket() {
   Serial.print(" | RSSI=");
   Serial.print(rssi, 1);
   Serial.print(" | SNR=");
-  Serial.println(snr, 1);
+  Serial.print(snr, 1);
+  Serial.print(" | CRC=");
+  Serial.println(crcOk ? "OK" : "FAIL");
 
   // Hex dump
   Serial.print("  HEX: ");

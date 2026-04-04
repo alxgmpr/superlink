@@ -30,17 +30,35 @@ Offset  Size  Field     Type                 Notes
 0       1     Mctrl     uint8_t              Management/message control byte
 1       1     Dctrl     uint8_t              Data control byte
 2       6     Address   MacAddress (6 bytes)  Source or destination MAC
-8       2     ???       uint16_t             Possibly frame counter or session ID
+8       1     SeqHi     uint8_t              Frame counter (monotonically increasing)
+9       1     SeqLo     uint8_t              Nonce/sub-counter (varies per frame)
 ```
 
 The Mctrl and Dctrl bytes are bitfield structures (classes `phypayload::Mctrl`
-and `phypayload::Dctrl`). Their exact bit layout needs further RE, but they
-likely encode:
-- Frame type (beacon, discovery, connection, data, management)
-- Direction (uplink vs downlink)
-- Encryption flag (plain vs secure)
-- Ack request flag
-- Sequence number bits
+and `phypayload::Dctrl`). Their exact bit layout needs further RE.
+
+#### Observed Mctrl values
+
+| Value | Binary     | Context |
+|-------|-----------|---------|
+| 0xE0  | 1110 0000 | All observed data frames (SecureHeader) |
+
+#### Observed Dctrl values
+
+| Value | Binary     | Direction | Frame Size | Payload Size | Notes |
+|-------|-----------|-----------|------------|--------------|-------|
+| 0x44  | 0100 0100 | UL        | 20 bytes   | 6 bytes      | Seen once, variant frame |
+| 0x54  | 0101 0100 | UL        | 19 bytes   | 5 bytes      | Standard UL data |
+| 0x63  | 0110 0011 | DL        | 16 bytes   | 2 bytes      | Standard DL response |
+
+#### Sequence Field (bytes 8-9)
+
+The high byte (offset 8) is a monotonically increasing frame counter shared
+between UL and DL directions. When parked on a single UL channel, the high
+byte increments by 2 between consecutive captures (~2s apart), suggesting the
+sensor transmits approximately once per 250ms across 8 channels (full cycle
+~2s). The low byte (offset 9) appears to vary independently, possibly serving
+as part of the encryption nonce.
 
 ### Integrity Check (4 bytes, offset 10-13)
 
@@ -136,21 +154,25 @@ From `FUN_0003bff8` (frame decryption):
 
 ## Coding Rate
 
-Not yet confirmed from decompilation. The SX1302 config path supports
-"4/5", "4/6", "4/7", "4/8" (from error string at sx1302_config.c-812).
-Default for most LoRa is 4/5. The JSON config template doesn't specify
-an explicit coding_rate, suggesting the default (4/5) is used.
+The SX1302 config template (`cfg.template.sx1302.us.json`) does not specify
+an explicit coding_rate. The SX1302 HAL defaults to 4/5 when not configured.
+**Confirmed via over-the-air capture**: the SX1262 sniffer successfully
+receives packets with CR=4/5, so this is correct.
 
 ## Summary of LoRa PHY Parameters
 
-| Parameter | Value |
-|-----------|-------|
-| Modulation | LoRa (CSS) |
-| Spreading Factor | SF5 |
-| Bandwidth | 125 kHz (UL) / 500 kHz (DL) |
-| Coding Rate | 4/5 (default, unconfirmed) |
-| Sync Word | 0x1424 (private LoRa) |
-| Preamble | 8 symbols (default, unconfirmed) |
-| Header Mode | Explicit (standard LoRa) |
-| Payload CRC | Likely enabled |
-| Byte Order | Big-endian |
+| Parameter | Value | Status |
+|-----------|-------|--------|
+| Modulation | LoRa (CSS) | Confirmed |
+| Spreading Factor | SF5 | **Confirmed OTA** |
+| Bandwidth | 125 kHz (UL) / 500 kHz (DL) | **Confirmed OTA** |
+| Coding Rate | 4/5 | **Confirmed OTA** |
+| Sync Word | 0x1424 (private LoRa) | **Confirmed OTA** |
+| Preamble | **12 symbols** (SF5/SF6 requirement) | **Confirmed OTA** |
+| Header Mode | Explicit | **Confirmed OTA** |
+| Payload CRC | Enabled | **Confirmed OTA** |
+| Byte Order | Big-endian | Confirmed |
+
+Note: The SX1302 HAL (Semtech sx1302_hal, loragw_sx1302.c) uses 12-symbol
+preambles for SF5/SF6 and 8-symbol preambles for SF7-SF12. SF5 also has
+separate syncword registers (`PEAK1_POS_SF5`, `PEAK2_POS_SF5`) from SF7-SF12.
