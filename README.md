@@ -1,110 +1,117 @@
 # OpenSuperLink
 
-Open-source reverse engineering of Ubiquiti's proprietary SuperLink protocol — a LoRa-based sub-GHz radio system operating on 915 MHz (US ISM band).
-
-> **Status: Early Research / Scaffolding** — No devices in hand yet. Collecting public information and building tooling.
+Reverse engineering of Ubiquiti's proprietary SuperLink protocol — a LoRa-based sub-GHz radio system on 915 MHz (US ISM band).
 
 ## What is SuperLink?
 
-SuperLink is Ubiquiti's proprietary long-range wireless protocol used across their UniFi ecosystem. It rides on top of standard **Semtech LoRa chirp spread spectrum (CSS) modulation** but uses a completely proprietary MAC layer, framing, encryption, and device management protocol. It is **not LoRaWAN-compatible**.
+SuperLink is Ubiquiti's proprietary long-range wireless protocol used in UniFi Access, UniFi Connect, UniFi SmartPower, and gateway products. It uses standard Semtech LoRa chirp spread spectrum modulation but a completely proprietary MAC layer with custom framing, encryption, and device management. It is not LoRaWAN.
 
-### Known Products Using SuperLink
+Products: UDM-Pro/SE/Max, UniFi Express (hub); UA-Hub/Lite/Pro, Connect Display, EV Station, USP-Plug/Strip/PDU, Building Bridge (peripherals).
 
-| Product | Role | Notes |
-|---------|------|-------|
-| UDM-Pro / UDM-SE / UDM-Pro Max | Hub/Coordinator | Integrated SuperLink radio module |
-| UniFi Express | Hub/Coordinator | Compact gateway with SuperLink |
-| UniFi Access (UA-Hub, UA-Lite, UA-Pro) | Peripheral | Door access readers |
-| UniFi Connect (Display, EV Station) | Peripheral | Digital signage, EV charging |
-| UniFi SmartPower (USP-Plug, USP-Strip, USP-PDU) | Peripheral | Smart power devices |
-| UniFi Building Bridge | Peripheral | Point-to-point sub-GHz links |
+## Hardware
 
-### Architecture
+- Hub side: Semtech SX1302 digital baseband (8 simultaneous RX channels)
+- Peripheral side: Semtech SX1262 single-channel LoRa transceiver (+22 dBm)
+- RF front-end: Skyworks SKY66420-11 (860–930 MHz PA/LNA)
+
+## LoRa PHY Parameters
+
+All confirmed over-the-air:
+
+| Parameter | Value |
+|-----------|-------|
+| Spreading Factor | SF5 |
+| Bandwidth (UL) | 125 kHz |
+| Bandwidth (DL) | 500 kHz |
+| Coding Rate | 4/5 |
+| Sync Word | 0x1424 (private LoRa) |
+| Preamble | 12 symbols (SF5/SF6 requirement) |
+| Header Mode | Explicit |
+| Byte Order | Big-endian |
+
+8 UL channels: 915.6–917.0 MHz (125 kHz, SF5)
+8 DL channels: 920.4–924.6 MHz (500 kHz, SF5)
+Beacon channel: 927.6 MHz
+
+## Frame Format
 
 ```
-  [UniFi Gateway]          Star Topology
-   SuperLink Hub    <--- 915 MHz LoRa --->  [UA-Pro Reader]
-        |                                   [USP-Plug]
-        |                                   [Connect Display]
-   [UniFi Controller]                       [Building Bridge]
+Offset  Size  Field
+------  ----  -----
+0       10    Cleartext header (always unencrypted)
+10      4     Integrity check (BLAKE2b truncated to 4 bytes)
+14      N     Payload (XSalsa20-encrypted for SecureHeader frames)
 ```
 
-## What We Know So Far
+Cleartext header (10 bytes):
+```
+Offset  Size  Field
+------  ----  -----
+0       1     Mctrl (management/message control)
+1       1     Dctrl (data control)
+2       6     MAC address (source or destination)
+8       1     SeqHi (frame counter, increments per packet)
+9       1     SeqLo (nonce component, pseudo-random)
+```
 
-### Physical Layer (Confirmed from FCC Internal Photos)
-- **Modulation**: Semtech LoRa (CSS) — standard PHY
-- **Frequency**: 902–928 MHz ISM band (US), FHSS across multiple channels
-- **Transceiver**: **Semtech SX1262** (peripheral side — single-channel LoRa transceiver, +22 dBm)
-- **Baseband**: **Semtech SX1302** (hub side — multi-channel digital baseband, 8 simultaneous RX channels)
-- **RF Front-End**: **Skyworks SKY66420-11** (860–930 MHz FEM — PA + LNA + switch)
-- **Bandwidth**: Likely 125 kHz or 500 kHz per channel
-- **Spreading Factor**: Likely SF7–SF10
-- **TX Power**: Up to +22 dBm
+Observed frame types by Dctrl:
+- 0x54: standard UL data (19 bytes total: 10 header + 4 MIC + 5 payload)
+- 0x44: variant UL data (20 bytes total: 10 header + 4 MIC + 6 payload)
+- 0x63: standard DL response (16 bytes total: 10 header + 4 MIC + 2 payload)
 
-### MAC / Protocol Layer
-- Proprietary framing (not LoRaWAN)
-- Bidirectional communication with low latency
-- Device discovery, pairing, and adoption via UniFi controller
-- Low throughput (single-digit kbps) — control/status messages only
+All observed data frames use Mctrl=0xE0 (SecureHeader).
 
-### Security
-- AES encryption (per Ubiquiti marketing)
-- Key exchange during adoption process
-- Key derivation, auth handshake, session management — all unknown
+## Decrypted Payload (USL-Entry door sensor)
 
-### Hardware
-- Hub devices: LoRa radio on daughter card/module connected to main SoC
-- Peripheral devices: LoRa transceiver on main PCB
-- FCC filings under grantee code **SWX** (e.g., SWX-UDMPRO, SWX-UDMSE)
+Standard 5-byte UL payload:
+```
+Byte 0: 0x0C  type (sensor report)
+Byte 1: 0x00  flags
+Byte 2: 0x0F  command (door state)
+Byte 3: 0x00  sub-command
+Byte 4: 0x00/0x01  door state (0x00=open, 0x01=closed)
+```
 
-## Project Structure
+Extended 22-byte UL payload (sent periodically every ~16 frames):
+contains sensor metadata including what appears to be battery level (0x64 = 100%),
+uptime counter, and possibly temperature readings.
+
+## Crypto
+
+- Session keys: Curve25519 ECDH, renegotiated each time lorabrd restarts
+- Data encryption: XSalsa20 (stream cipher via crypto_stream_xor)
+- Authenticated encryption: XSalsa20-Poly1305 for important frames
+- Integrity: BLAKE2b (4-byte truncated MAC, covers header + payload)
+- Nonce: 24 bytes, derived from frame header fields; last byte increments per packet
+- Pairing: hardcoded default key used during initial device adoption (see docs/protocol/crypto_and_pairing.md)
+
+## Channel Hopping
+
+The sensor hops sequentially through all 8 UL channels (CH1→CH2→...→CH8→repeat).
+One frame per channel, ~2s TX interval, full 8-channel cycle takes ~16 seconds.
+The gateway listens on all 8 UL channels simultaneously and responds on the paired DL channel.
+A single-channel SX1262 sniffer captures roughly 1/8 of packets when parked on one channel.
+
+## Repository Structure
 
 ```
 superlink/
-├── docs/                   # Documentation
-│   ├── fcc/                # FCC filings, test reports, internal photos
-│   ├── teardowns/          # Hardware teardown notes and photos
-│   ├── protocol/           # Protocol documentation as we decode it
-│   └── captures/           # Annotated RF captures
-├── tools/                  # Tooling
-│   ├── sdr/                # SDR capture scripts (GNU Radio, etc.)
-│   ├── decoder/            # Packet decoder / dissector
-│   └── emulator/           # Protocol emulator for testing
-├── firmware/               # Firmware analysis
-│   ├── dumps/              # Extracted firmware images
-│   └── analysis/           # Ghidra/IDA projects, notes
-├── src/                    # Protocol implementation (as decoded)
-│   ├── phy/                # Physical layer (LoRa demod/mod)
-│   ├── mac/                # MAC layer framing
-│   ├── crypto/             # Encryption / key exchange
-│   └── transport/          # Higher-level protocol logic
-├── tests/                  # Test suite
-└── research/               # Research notes, links, references
+├── docs/protocol/          — frame format, crypto, channel plan, OTA captures
+├── docs/teardowns/         — hardware component identification
+├── tools/sniffer/          — PlatformIO project: Heltec V3 + SX1262 packet sniffer
+├── tools/decoder/          — placeholder for Wireshark dissector
+├── tools/sdr/              — GNU Radio capture notes
+├── firmware/dumps/         — extracted firmware images (gitignored)
+├── src/                    — future protocol implementation
+└── research/               — research tracking
 ```
 
-## Reverse Engineering Plan
-
-See [docs/RE_PLAN.md](docs/RE_PLAN.md) for the detailed phased approach.
-
-## Related Work
-
-- **[gr-lora](https://github.com/rpp0/gr-lora)** — GNU Radio LoRa demodulator (can decode raw LoRa symbols)
-- **[LoRa-SDR](https://github.com/tapparelj/gr-lora_sdr)** — Alternative GNU Radio LoRa implementation
-- **[RevSpace LoRa](https://revspace.nl/DecodingLora)** — LoRa PHY reverse engineering reference
-- **[UniFi Inform Protocol](https://github.com/mcrute/ubnt-tools)** — Reverse engineered UniFi controller protocol (useful reference for Ubiquiti's patterns)
+See [docs/RE_PLAN.md](docs/RE_PLAN.md) for the phased reverse engineering roadmap.
 
 ## Legal
 
-This project is for **interoperability research** under applicable reverse engineering exemptions. All work is based on:
-- Publicly available FCC filings
-- Over-the-air RF captures (legal to receive under FCC Part 15)
-- Published hardware teardowns
-- Firmware analysis for interoperability purposes
-
-## Contributing
-
-This project is in its earliest stages. If you have access to SuperLink devices or relevant expertise, contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Interoperability research under applicable reverse engineering exemptions. Based on publicly available FCC filings, over-the-air captures (legal under FCC Part 15), and firmware analysis for interoperability purposes.
 
 ## License
 
-MIT — See [LICENSE](LICENSE)
+MIT
