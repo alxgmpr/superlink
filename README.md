@@ -6,7 +6,6 @@ Reverse engineering of Ubiquiti's proprietary SuperLink protocol — a LoRa-base
 
 SuperLink is Ubiquiti's proprietary long-range wireless protocol used in UniFi Access, UniFi Connect, UniFi SmartPower, and gateway products. It uses standard Semtech LoRa chirp spread spectrum modulation but a completely proprietary MAC layer with custom framing, encryption, and device management. It is not LoRaWAN.
 
-Products: UDM-Pro/SE/Max, UniFi Express (hub); UA-Hub/Lite/Pro, Connect Display, EV Station, USP-Plug/Strip/PDU, Building Bridge (peripherals).
 
 ## Hardware
 
