@@ -4,7 +4,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from superlink.decoder import parse_frame, build_nonce, format_mac
+from superlink.decoder import parse_frame, build_nonce, format_mac, interpret_payload
 
 # Real captured packet from docs/protocol/ota_captures.md
 # Standard UL data: E0 54 90 41 B2 2E 9A 53 5B 11 9C FF C2 4C 8A 41 BC 35 D6
@@ -65,6 +65,24 @@ def test_parse_frame_unknown_dctrl():
     assert frame.frame_type == "unknown"
 
 
+def test_interpret_payload_door_open():
+    assert interpret_payload(0x54, bytes([0x0C, 0x00, 0x0F, 0x00, 0x00])) == "DOOR OPEN"
+
+
+def test_interpret_payload_door_closed():
+    assert interpret_payload(0x54, bytes([0x0C, 0x00, 0x0F, 0x00, 0x01])) == "DOOR CLOSED"
+
+
+def test_interpret_payload_dl_ignored():
+    # DL frames should not be interpreted as sensor reports
+    assert interpret_payload(0x63, bytes([0x0C, 0x00, 0x0F, 0x00, 0x01])) is None
+
+
+def test_interpret_payload_too_short():
+    assert interpret_payload(0x54, bytes([0x0C, 0x00])) is None
+    assert interpret_payload(0x54, b"") is None
+
+
 if __name__ == "__main__":
     test_parse_frame_ul()
     test_parse_frame_too_short()
@@ -73,4 +91,8 @@ if __name__ == "__main__":
     test_build_nonce()
     test_parse_frame_dl()
     test_parse_frame_unknown_dctrl()
+    test_interpret_payload_door_open()
+    test_interpret_payload_door_closed()
+    test_interpret_payload_dl_ignored()
+    test_interpret_payload_too_short()
     print("All tests passed!")

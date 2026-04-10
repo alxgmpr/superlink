@@ -28,7 +28,7 @@ DCTRL_TABLE = {
     0x54: ("UL", "data"),
     0x44: ("UL", "data-ext"),
     0x63: ("DL", "data"),
-    0x74: ("DL", "ack"),
+    0x74: ("DL", "ack"),  # unconfirmed — from decoder heuristic, not yet observed OTA
 }
 
 # Known payload interpretations
@@ -119,8 +119,11 @@ def decrypt_frame(frame: SuperLinkFrame, key: bytes) -> SuperLinkFrame:
 
 
 def interpret_payload(dctrl: int, payload: bytes) -> str | None:
-    """Try to interpret decrypted payload bytes."""
+    """Try to interpret decrypted payload bytes. Only interprets UL data frames."""
     if not payload or len(payload) < 5:
+        return None
+    # Only interpret UL data frames (sensor reports)
+    if dctrl not in (0x54, 0x44):
         return None
 
     ptype = payload[0]
