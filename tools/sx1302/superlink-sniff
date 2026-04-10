@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+"""SuperLink SX1302 sniffer entry point."""
+from superlink.cli import main
+
+main()
