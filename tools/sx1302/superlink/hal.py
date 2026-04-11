@@ -80,6 +80,24 @@ IF_TO_UL_CH = {
     2: 8,  # 917.0 MHz
 }
 
+# --- Downlink channel plan (500 kHz, SF5) ---
+
+DL_FREQ_HZ = [
+    920_400_000,  # CH9  (paired with UL CH1)
+    921_000_000,  # CH10 (paired with UL CH2)
+    921_600_000,  # CH11 (paired with UL CH3)
+    922_200_000,  # CH12 (paired with UL CH4)
+    922_800_000,  # CH13 (paired with UL CH5)
+    923_400_000,  # CH14 (paired with UL CH6)
+    924_000_000,  # CH15 (paired with UL CH7)
+    924_600_000,  # CH16 (paired with UL CH8)
+]
+
+BEACON_FREQ_HZ = 927_600_000  # CH17
+
+# UL channel index (0-7) → paired DL frequency
+UL_TO_DL_FREQ = {i: DL_FREQ_HZ[i] for i in range(8)}
+
 SPI_PATH = b"/dev/spidev0.0"
 HAL_LIB_PATH = os.path.expanduser("~/sx1302_hal/libloragw/libloragw.so")
 RESET_SCRIPT = os.path.expanduser("~/sx1302_hal/tools/reset_lgw.sh")
@@ -160,6 +178,34 @@ class lgw_pkt_rx_s(ctypes.Structure):
         ("ftime", ctypes.c_uint32),
     ]
 
+# TX mode enum
+TX_IMMEDIATE = 0
+TX_TIMESTAMPED = 1
+TX_ON_GPS = 2
+
+
+class lgw_pkt_tx_s(ctypes.Structure):
+    """TX packet structure. Field order matches loragw_hal.h."""
+    _fields_ = [
+        ("freq_hz", ctypes.c_uint32),
+        ("tx_mode", ctypes.c_uint8),
+        ("count_us", ctypes.c_uint32),
+        ("rf_chain", ctypes.c_uint8),
+        ("rf_power", ctypes.c_int8),
+        ("modulation", ctypes.c_uint8),
+        ("bandwidth", ctypes.c_uint8),
+        ("datarate", ctypes.c_uint32),
+        ("coderate", ctypes.c_uint8),
+        ("invert_pol", ctypes.c_bool),
+        ("f_dev", ctypes.c_uint8),
+        ("preamble", ctypes.c_uint16),
+        ("no_crc", ctypes.c_bool),
+        ("no_header", ctypes.c_bool),
+        ("size", ctypes.c_uint16),
+        ("payload", ctypes.c_uint8 * 256),
+    ]
+
+
 # --- Python dataclass for clean interface ---
 
 @dataclass
@@ -217,6 +263,9 @@ class SX1302:
         self._lib.lgw_version_info.argtypes = []
         self._lib.lgw_version_info.restype = ctypes.c_char_p
 
+        self._lib.lgw_send.argtypes = [ctypes.POINTER(lgw_pkt_tx_s)]
+        self._lib.lgw_send.restype = ctypes.c_int
+
     def _configure(self):
         """Apply SuperLink channel configuration."""
         # Board config
@@ -236,7 +285,7 @@ class SX1302:
         rf0.freq_hz = RADIO_A_FREQ_HZ
         rf0.rssi_offset = -215.4
         rf0.type = LGW_RADIO_TYPE_SX1250
-        rf0.tx_enable = False
+        rf0.tx_enable = True
         rf0.single_input_mode = False
         rc = self._lib.lgw_rxrf_setconf(0, ctypes.byref(rf0))
         if rc != 0:
@@ -314,6 +363,36 @@ class SX1302:
                 coderate=p.coderate,
             ))
         return packets
+
+    def send(self, freq_hz: int, payload: bytes,
+             rf_power: int = 10, bandwidth: int = BW_500KHZ) -> None:
+        """Transmit a frame.
+
+        Args:
+            freq_hz: TX frequency in Hz.
+            payload: Frame bytes to transmit.
+            rf_power: TX power in dBm (default 10).
+            bandwidth: LoRa bandwidth (BW_500KHZ for DL, BW_125KHZ for UL).
+        """
+        pkt = lgw_pkt_tx_s()
+        pkt.freq_hz = freq_hz
+        pkt.tx_mode = TX_IMMEDIATE
+        pkt.rf_chain = 0
+        pkt.rf_power = rf_power
+        pkt.modulation = MOD_LORA
+        pkt.bandwidth = bandwidth
+        pkt.datarate = DR_LORA_SF5
+        pkt.coderate = CR_LORA_4_5
+        pkt.invert_pol = False
+        pkt.preamble = 12
+        pkt.no_crc = False
+        pkt.no_header = False
+        pkt.size = len(payload)
+        ctypes.memmove(pkt.payload, payload, len(payload))
+
+        rc = self._lib.lgw_send(ctypes.byref(pkt))
+        if rc != 0:
+            raise RuntimeError(f"lgw_send failed (rc={rc})")
 
     def __enter__(self):
         self.start()
