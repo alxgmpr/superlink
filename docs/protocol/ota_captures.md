@@ -154,21 +154,71 @@ The same sequence repeated at 20:00 (second reconnection attempt), confirming it
 Successfully captured session keys by hooking `crypto_stream_xor` in `lorabrd`:
 - **Tool**: `tools/keyhook/keyhook.c` — cross-compiled for armv7l (gateway arch)
 - **Method**: LD_PRELOAD on lorabrd, logs unique keys to `/tmp/keyhook.log`
-- **Result**: Two keys captured per session (one data key, one derivation key)
+- **Result**: Session key + default pairing key captured, with per-packet nonces
 - **Caveat**: Keys rotate on every lorabrd restart; sensor takes ~5 min to reconnect
+
+### Nonce Construction (CONFIRMED via keyhook)
+
+The 24-byte XSalsa20 nonce is constructed as follows:
+
+```
+Byte   Source          Example (UL data)
+----   ------          ---------
+0      Mctrl           0xE0
+1      Dctrl           0x54 (OTA value, NOT canonical)
+2-7    MAC address     90:41:B2:2E:9A:53
+8      SeqHi           0x07
+9      SeqLo           0x2D
+10-22  Zero padding    00 00 00 00 00 00 00 00 00 00 00 00 00
+23     Counter         0x02 (UL frame counter)
+```
+
+**Counter rules** (derived from keyhook per-packet nonce analysis):
+- **UL data (0x54)**: counter = seq_hi - 5 (= number of UL data frames since session start)
+- **UL setup (0x44)**: counter = 1 (fixed during handshake)
+- **DL data (0x63)**: counter = 4 (= total DL handshake frames, fixed after handshake)
+- **DL handshake (0x74)**: counter increments 0, 1, 2, 3...
+- The "5" offset = number of UL handshake frames (seq_hi 01-05) in a reconnection
+
+**The counter in nonce byte 23 was the missing piece** — previous attempts used all-zero trailing bytes, which only works for the very first frame.
+
+### Confirmed Decryption (36B extended report)
+
+Successfully decrypted a 36B UL data frame captured OTA:
+```
+Frame: E0 54 9041B22E9A53 0D 2D [26B encrypted]
+Key:   3bfc41760a9eb10c01989bfdbfc384f770617d7a5bfa56acc72d90edeefb8c06
+Nonce: E0 54 9041B22E9A53 0D 2D 00...00 08  (counter = 0x0D - 5 = 8)
+
+Decrypted: [MIC 4B] 0C 00 01 00 00 08 6E 04 02 00 64 E0 07 03 00 60 0C 16 00 0F 00 00
+                     ^type  ^sub     ^uptime? ^?  ^bat ^temp ^?  ^?     ^?  ^door=OPEN
+```
+
+Payload matches the extended report format from the first session exactly.
+
+### Keys Per Session
+
+A reconnection session uses these keys (from keyhook analysis):
+1. **Old session key** — used to decrypt the incoming 0x42 connection frame (from sensor, encrypted with previous session key)
+2. **New session key** — derived via DH exchange, used for all subsequent frames:
+   - 0x44 setup frames (UL, counter=1)
+   - 0x54 data frames (UL, counter=seq_hi-5)
+   - 0x53/0x74 handshake responses (DL)
+   - 0x63 data responses (DL, counter=4)
+3. **Default pairing key** — used for 0x40 management/keepalive frames (independent seq counter)
 
 ### Key Finding: Dctrl Byte Encodes Frame Type + Direction
 
-Combining all observed values across both sessions:
-
-| Dctrl | Direction | Frame Type | Size Range |
-|-------|-----------|------------|------------|
-| 0x40  | UL | Data extended (variant) | 22B |
-| 0x42  | UL | Connection/Challenge | 63B |
-| 0x44  | UL | Setup/Config data | 20-92B |
-| 0x54  | UL | Standard data | 19-36B |
-| 0x53  | DL | Response/Ack | 16B |
-| 0x63  | DL | Standard data | 16B |
+| Dctrl | Direction | Frame Type | Crypto Key | Counter | Size Range |
+|-------|-----------|------------|------------|---------|------------|
+| 0x40  | UL | Management/keepalive | Default pairing key | 0? | 22B |
+| 0x42  | UL | Connection/Challenge | Old session key | 0 | 63B |
+| 0x43  | DL | Management ack | Session key? | ? | 16B |
+| 0x44  | UL | Setup/Config data | Session key | 1 | 20-92B |
+| 0x53  | DL | Connection response | Session key | 0 | 16B |
+| 0x54  | UL | Standard data | Session key | seq_hi-5 | 19-36B |
+| 0x63  | DL | Standard data | Session key | 4 | 16B |
+| 0x74  | DL | Setup response | Session key | 0-3 | 16B |
 
 ### Raw Capture Files
 - `captures/capture_preamble12_20260404.log` — First successful capture (scan all)

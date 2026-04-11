@@ -1,10 +1,12 @@
 /*
  * keyhook.c — LD_PRELOAD shim for lorabrd on USL Gateway
  *
- * Intercepts libsodium crypto_stream_xor to capture ephemeral session keys.
- * Avoids dlsym (requires GLIBC_2.34) by only hooking crypto_stream_xor and
- * calling crypto_stream_xsalsa20_xor directly (which libsodium's
- * crypto_stream_xor normally wraps).
+ * Intercepts libsodium's crypto_stream_xsalsa20_xor (and the
+ * crypto_stream_xor wrapper that calls it) to capture all ephemeral
+ * session keys used for XSalsa20 stream encryption.
+ *
+ * Uses crypto_core_hsalsa20 + crypto_stream_salsa20_xor as the real
+ * XSalsa20 implementation to avoid infinite recursion.
  *
  * Build:
  *   arm-linux-gnueabihf-gcc -shared -fPIC -o keyhook.so keyhook.c
@@ -20,11 +22,10 @@
 
 #define NONCE_LEN 24
 #define KEY_LEN   32
-#define MAX_KEYS  16
+#define MAX_LOG   500
 
-static unsigned char seen_keys[MAX_KEYS][KEY_LEN];
-static int num_seen = 0;
 static int logfd = -1;
+static int log_count = 0;
 
 static const char hx[] = "0123456789abcdef";
 
@@ -50,37 +51,58 @@ static void wdec(int fd, unsigned long long v) {
     wstr(fd, &buf[i]);
 }
 
-static void log_key(const unsigned char *k, const unsigned char *n,
-                    unsigned long long len) {
+static void log_call(const char *func, const unsigned char *k,
+                     const unsigned char *n, unsigned long long len) {
+    if (log_count >= MAX_LOG) return;
+
     if (logfd < 0)
         logfd = open("/tmp/keyhook.log", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (logfd < 0) return;
 
-    for (int i = 0; i < num_seen; i++)
-        if (!memcmp(seen_keys[i], k, KEY_LEN)) return;
-    if (num_seen < MAX_KEYS)
-        memcpy(seen_keys[num_seen++], k, KEY_LEN);
-
-    wstr(logfd, "KEY=");   whex(logfd, k, KEY_LEN);
+    log_count++;
+    wstr(logfd, "FUNC="); wstr(logfd, func);
+    wstr(logfd, "\nKEY=");   whex(logfd, k, KEY_LEN);
     wstr(logfd, "\nNONCE="); whex(logfd, n, NONCE_LEN);
     wstr(logfd, "\nLEN="); wdec(logfd, len);
     wstr(logfd, "\n---\n");
 }
 
 /*
- * libsodium's crypto_stream_xor() is a thin wrapper around
- * crypto_stream_xsalsa20_xor(). We interpose crypto_stream_xor
- * and call the inner function directly — the linker resolves it
- * to libsodium's copy since we don't define it ourselves.
+ * Real XSalsa20 implementation using lower-level libsodium primitives.
+ * XSalsa20(k, n) = Salsa20(HSalsa20(k, n[0:16]), n[16:24])
  */
-extern int crypto_stream_xsalsa20_xor(
+extern int crypto_core_hsalsa20(
+    unsigned char *out, const unsigned char *in,
+    const unsigned char *k, const unsigned char *c);
+
+extern int crypto_stream_salsa20_xor(
     unsigned char *c, const unsigned char *m,
     unsigned long long mlen, const unsigned char *n,
     const unsigned char *k);
 
+static int real_xsalsa20_xor(unsigned char *c, const unsigned char *m,
+                              unsigned long long mlen, const unsigned char *n,
+                              const unsigned char *k) {
+    unsigned char subkey[32];
+    crypto_core_hsalsa20(subkey, n, k, 0);
+    int rc = crypto_stream_salsa20_xor(c, m, mlen, n + 16, subkey);
+    memset(subkey, 0, 32);
+    return rc;
+}
+
+/* --- Hooked functions --- */
+
+int crypto_stream_xsalsa20_xor(
+    unsigned char *c, const unsigned char *m,
+    unsigned long long mlen, const unsigned char *n,
+    const unsigned char *k) {
+    log_call("xsalsa20", k, n, mlen);
+    return real_xsalsa20_xor(c, m, mlen, n, k);
+}
+
 int crypto_stream_xor(unsigned char *c, const unsigned char *m,
                       unsigned long long mlen, const unsigned char *n,
                       const unsigned char *k) {
-    log_key(k, n, mlen);
-    return crypto_stream_xsalsa20_xor(c, m, mlen, n, k);
+    log_call("stream", k, n, mlen);
+    return real_xsalsa20_xor(c, m, mlen, n, k);
 }

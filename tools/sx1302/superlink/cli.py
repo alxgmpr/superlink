@@ -125,19 +125,16 @@ def format_packet(pkt: RxPacket, frame: SuperLinkFrame | None, show_raw: bool) -
     lines.append(line1)
 
     # Line 2: detail
-    mic_hex = frame.mic.hex()
-    if frame.mic_valid is True:
-        mic_str = f"MIC={mic_hex} {C_GREEN}ok{C_RESET}"
-    elif frame.mic_valid is False:
-        mic_str = f"MIC={mic_hex} {C_RED}FAIL{C_RESET}"
-    else:
-        mic_str = f"MIC={mic_hex} {C_DIM}--{C_RESET}"
+    mic_str = ""
+    if frame.mic is not None:
+        mic_hex = frame.mic.hex()
+        mic_str = f"MIC={mic_hex} "
 
     payload_hex = ""
     if frame.payload is not None:
         payload_hex = frame.payload.hex()
-    elif frame.payload_enc:
-        payload_hex = f"{C_YELLOW}{frame.payload_enc.hex()}{C_RESET}"
+    else:
+        payload_hex = f"{C_YELLOW}{frame.encrypted.hex()}{C_RESET}"
 
     interp = ""
     if frame.interpretation:
@@ -180,9 +177,9 @@ def log_packet(
             pkt.snr,
             "OK" if pkt.crc_ok else "BAD",
             f"{frame.dctrl:02X}",
-            "" if frame.mic_valid is None else ("ok" if frame.mic_valid else "FAIL"),
+            frame.mic.hex() if frame.mic is not None else "",
             (frame.payload.hex() if frame.payload is not None
-             else frame.payload_enc.hex()),
+             else frame.encrypted.hex()),
             frame.interpretation or "",
         ])
 
@@ -241,6 +238,14 @@ def main():
     parser.add_argument(
         "--log", metavar="FILE.csv",
         help="Log packets to CSV file",
+    )
+    parser.add_argument(
+        "--counter-offset", type=int, default=5, metavar="N",
+        help="UL nonce counter offset (default: 5, from reconnection handshake)",
+    )
+    parser.add_argument(
+        "--dl-counter", type=int, default=4, metavar="N",
+        help="DL nonce counter (default: 4, from reconnection handshake)",
     )
     args = parser.parse_args()
 
@@ -325,7 +330,9 @@ def main():
 
                 # Decrypt if we have a key
                 if frame is not None and session_key is not None:
-                    frame = decrypt_frame(frame, session_key)
+                    frame = decrypt_frame(frame, session_key,
+                                          ul_counter_offset=args.counter_offset,
+                                          dl_counter=args.dl_counter)
 
                 # Apply filters
                 if args.channel and pkt.ul_channel != args.channel:

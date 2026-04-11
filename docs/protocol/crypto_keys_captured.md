@@ -34,40 +34,47 @@ Two keys observed, corresponding to UL and DL directions:
 
 Both keys used with `crypto_stream_xor` (XSalsa20 stream cipher).
 
-## Nonce Construction (CONFIRMED)
+## Nonce Construction (CONFIRMED — 2026-04-10)
 
-The 24-byte XSalsa20 nonce is constructed from the packet header:
+The 24-byte XSalsa20 nonce is:
 
 ```
-Byte  Source          Example
+Byte  Source          Example (UL data frame)
 ----  ------          -------
 0     Mctrl           0xE0
-1     Dctrl           0x62 (UL) or 0x44 (DL) etc
+1     Dctrl           0x54 (OTA dctrl value, NOT canonical)
 2-7   MAC address     90:41:B2:2E:9A:53
-8-9   Seq (hi, lo)    0x40, 0x11
-10-19 Zero padding    00 00 00 00 00 00 00 00 00 00
-20-23 Counter?        00 00 00 00 (increments for multi-block)
+8     SeqHi           0x07
+9     SeqLo           0x2D
+10-22 Zero padding    00 00 00 00 00 00 00 00 00 00 00 00 00
+23    Counter         0x02 (per-direction frame counter)
 ```
 
-Confirmed by matching hook output nonces to captured packet headers:
-- `e062<MAC><SEQ>0000000000000000000000000000` matches mctrl=0xE0, dctrl=0x62, MAC=device MAC, seq=frame counter
+**Counter byte 23** is critical — NOT always zero. For UL data: counter = seq_hi - 5.
+For DL data: counter = 4 (fixed, = total DL handshake frames).
+See `docs/protocol/ota_captures.md` for full counter rules.
+
+**Previous note about "canonical dctrl" was incorrect** — the nonce uses the
+actual OTA dctrl value. The 0x62 value seen in earlier captures was from the
+OLD session key processing an internal buffer, not the current session's nonce.
 
 ## Encryption Details
 
-- **Data frames**: `crypto_stream_xor` (XSalsa20, no authentication at frame level)
-- **Management frames**: `crypto_secretbox` (XSalsa20-Poly1305, authenticated)
+- **Data frames (0x54, 0x63)**: `crypto_stream_xor` (XSalsa20) with session key
+- **Setup frames (0x44, 0x74)**: `crypto_stream_xor` (XSalsa20) with session key
+- **Management frames (0x40)**: `crypto_stream_xor` (XSalsa20) with default pairing key
+- **Connection frame (0x42)**: `crypto_stream_xor` with previous session key
 - **Key exchange**: `crypto_secretbox` with nonce containing "UBNU"/"UBNV" ASCII markers
 - **DH**: `crypto_scalarmult` (Curve25519)
 - **KDF**: `crypto_generichash` (BLAKE2b) — used to derive session keys from DH shared secret
 
-## Captured Nonce-to-Packet Mapping
+## Frame Encryption Coverage
+
+XSalsa20 encrypts ALL bytes after the 10-byte header (MIC + payload together).
+After decryption, the first 4 bytes are an integrity check and the remaining
+bytes are the application payload.
 
 ```
-stream_xor len=45 nonce=e062<MAC><SEQ>0000... → UL packet mctrl=E0 dctrl=62
-stream_xor len=53 nonce=e042<MAC><SEQ>0000... → UL packet mctrl=E0 dctrl=42
-stream_xor len=22 nonce=e062<MAC><SEQ>0000... → UL packet mctrl=E0 dctrl=62
-stream_xor len=9  nonce=e054<MAC><SEQ>0000... → DL packet mctrl=E0 dctrl=54
+OTA frame:  [10B header (cleartext)] [N bytes encrypted]
+Decrypted:  [10B header]             [4B MIC] [payload]
 ```
-
-Note: The dctrl in the nonce may differ from what we see OTA — the nonce uses the
-"canonical" dctrl before direction-specific modifications.
