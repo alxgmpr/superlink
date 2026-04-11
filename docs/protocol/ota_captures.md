@@ -102,6 +102,74 @@ receive all 8 UL channels simultaneously, matching the gateway's capability.
 5. The MAC address in DL frames is the **sensor** MAC, not the gateway MAC
 6. Session keys are ephemeral — renegotiated each time lorabrd restarts (DH key exchange)
 
+## Second Capture Session — 2026-04-10
+
+### Setup
+- **Sniffer**: SX1302 CoreCell (SX1250 radios) + RPi 4B, all 8 UL channels simultaneously
+- **Gateway**: USL-Gateway (same as above)
+- **Sensor**: USL-Entry (same as above)
+- **Software**: Custom Python sniffer (`tools/sx1302/`) with ctypes HAL wrapper
+
+### Steady-State Packet Sizes
+
+| Size | Payload | Dctrl | Frequency | Description |
+|------|---------|-------|-----------|-------------|
+| 19B  | 5B      | 0x54  | Every ~2s | Standard UL data (door state) |
+| 22B  | 8B      | 0x54/0x40 | Periodic | Mid-size report (new dctrl 0x40 observed) |
+| 36B  | 22B     | 0x54  | Every ~16 frames | Extended report (battery, temp, uptime) |
+
+### Reconnection Handshake (captured OTA after lorabrd restart)
+
+When the sensor reconnects after losing the gateway, the following frame sequence occurs:
+
+```
+Time     Size  Dctrl  Seq      Description
+19:55:07  63B  0x42   DE.34    Connection/challenge frame (49B payload)
+19:55:08  16B  0x53   01.2C    Response frame (2B payload)
+19:55:09  92B  0x44   02.81    Large setup frame (78B payload)
+19:55:10  41B  0x44   03.82    Setup continued (27B payload)
+19:55:11  20B  0x44   04.83    Setup continued (6B payload)
+19:55:12  41B  0x44   05.84    Setup continued (27B payload)
+19:55:16  36B  0x54   06.35    First data frame (extended report)
+```
+
+The same sequence repeated at 20:00 (second reconnection attempt), confirming it's deterministic.
+
+#### New Dctrl Values Observed
+
+| Value | Direction | Context | Notes |
+|-------|-----------|---------|-------|
+| 0x42  | UL | Reconnection | Connection/challenge, 63B frame, 49B payload contains DH pubkey? |
+| 0x53  | DL? | Reconnection | Response, 16B frame, matches DL data size |
+| 0x44  | UL | Reconnection | Multi-frame setup (92B, 41B, 20B sizes), seq_lo increments 0x81→0x84 |
+| 0x40  | UL | Steady-state | Seen on 22B frame, new variant of data-ext |
+
+#### Reconnection Timing
+- Sensor backoff after losing gateway: **~5 minutes** before first reconnection attempt
+- Second attempt follows ~5 minutes after first
+- During backoff, sensor transmits nothing on UL channels
+
+### Session Key Capture (LD_PRELOAD hook)
+
+Successfully captured session keys by hooking `crypto_stream_xor` in `lorabrd`:
+- **Tool**: `tools/keyhook/keyhook.c` — cross-compiled for armv7l (gateway arch)
+- **Method**: LD_PRELOAD on lorabrd, logs unique keys to `/tmp/keyhook.log`
+- **Result**: Two keys captured per session (one data key, one derivation key)
+- **Caveat**: Keys rotate on every lorabrd restart; sensor takes ~5 min to reconnect
+
+### Key Finding: Dctrl Byte Encodes Frame Type + Direction
+
+Combining all observed values across both sessions:
+
+| Dctrl | Direction | Frame Type | Size Range |
+|-------|-----------|------------|------------|
+| 0x40  | UL | Data extended (variant) | 22B |
+| 0x42  | UL | Connection/Challenge | 63B |
+| 0x44  | UL | Setup/Config data | 20-92B |
+| 0x54  | UL | Standard data | 19-36B |
+| 0x53  | DL | Response/Ack | 16B |
+| 0x63  | DL | Standard data | 16B |
+
 ### Raw Capture Files
 - `captures/capture_preamble12_20260404.log` — First successful capture (scan all)
 - `captures/capture_ch1_parked_20260404.log` — Parked on UL CH1 for sequential data
