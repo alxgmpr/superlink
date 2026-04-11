@@ -283,7 +283,7 @@ def main():
         if csv_file.tell() == 0:
             csv_writer.writerow([
                 "timestamp", "channel", "direction", "mac", "seq",
-                "rssi", "snr", "crc", "dctrl", "mic_valid",
+                "rssi", "snr", "crc", "dctrl", "mic",
                 "payload", "interpretation",
             ])
 

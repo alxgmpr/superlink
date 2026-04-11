@@ -185,7 +185,13 @@ TX_ON_GPS = 2
 
 
 class lgw_pkt_tx_s(ctypes.Structure):
-    """TX packet structure. Field order matches loragw_hal.h."""
+    """TX packet structure. Field order matches loragw_hal.h.
+
+    IMPORTANT: Verify sizeof(lgw_pkt_tx_s) matches the C struct on the RPi
+    before first TX test. Run on RPi:
+      python -c "from superlink.hal import lgw_pkt_tx_s; import ctypes; print(ctypes.sizeof(lgw_pkt_tx_s))"
+    Compare to: grep -A30 'lgw_pkt_tx_s' ~/sx1302_hal/libloragw/inc/loragw_hal.h
+    """
     _fields_ = [
         ("freq_hz", ctypes.c_uint32),
         ("tx_mode", ctypes.c_uint8),
@@ -374,6 +380,8 @@ class SX1302:
             rf_power: TX power in dBm (default 10).
             bandwidth: LoRa bandwidth (BW_500KHZ for DL, BW_125KHZ for UL).
         """
+        if len(payload) > 256:
+            raise ValueError(f"payload too large: {len(payload)} > 256")
         pkt = lgw_pkt_tx_s()
         pkt.freq_hz = freq_hz
         pkt.tx_mode = TX_IMMEDIATE

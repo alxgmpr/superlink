@@ -66,7 +66,6 @@ class SuperLinkFrame:
     frame_type: str
     mic: bytes | None = None       # decrypted MIC (4 bytes)
     payload: bytes | None = None   # decrypted payload
-    mic_valid: bool | None = None
     interpretation: str | None = None
 
 

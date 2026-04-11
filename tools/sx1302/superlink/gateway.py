@@ -5,9 +5,13 @@ Implements the connection state machine for pairing with
 factory-default sensors via Curve25519 DH exchange.
 """
 
+import argparse
+import csv
 import enum
 import logging
+import sys
 import time
+from datetime import datetime, timezone
 
 from .crypto import generate_keypair, compute_shared_secret, derive_session_key
 from .decoder import (
@@ -101,6 +105,8 @@ class GatewaySession:
         elif self.state == State.BEACONING:
             return self._handle_beaconing(frame)
 
+        log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
+                  self.state.value, frame.dctrl, format_mac(frame.mac))
         return None
 
     def _handle_active(self, frame: SuperLinkFrame) -> SuperLinkFrame | None:
@@ -129,11 +135,6 @@ class GatewaySession:
         log.debug("RX in BEACONING: dctrl=0x%02X from %s (not yet handled)",
                   frame.dctrl, format_mac(frame.mac))
         return None
-
-
-import argparse
-import csv
-import sys
 
 
 def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -226,7 +227,6 @@ def main():
                     continue
                 frame = session.handle_rx(pkt.payload)
                 if frame and csv_writer:
-                    from datetime import datetime, timezone
                     csv_writer.writerow([
                         datetime.now(timezone.utc).isoformat(),
                         frame.direction,
