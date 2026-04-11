@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+"""SuperLink standalone gateway."""
+from superlink.gateway import main
+main()

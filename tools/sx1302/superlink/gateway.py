@@ -129,3 +129,123 @@ class GatewaySession:
         log.debug("RX in BEACONING: dctrl=0x%02X from %s (not yet handled)",
                   frame.dctrl, format_mac(frame.mac))
         return None
+
+
+import argparse
+import csv
+import sys
+
+
+def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse gateway CLI arguments."""
+    parser = argparse.ArgumentParser(
+        description="SuperLink standalone gateway"
+    )
+    parser.add_argument(
+        "--mac", required=True, metavar="MAC",
+        help="Gateway MAC to advertise (e.g. AA:BB:CC:DD:EE:FF)",
+    )
+    parser.add_argument(
+        "--beacon-interval", type=float, default=240, metavar="SEC",
+        help="Seconds between beacon TX (default: 240)",
+    )
+    parser.add_argument(
+        "--log", metavar="FILE.csv",
+        help="Log all RX/TX frames to CSV file",
+    )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Print raw hex and crypto details",
+    )
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_gw_args()
+
+    # Parse MAC
+    try:
+        gw_mac = bytes.fromhex(args.mac.replace(":", "").replace("-", ""))
+        if len(gw_mac) != 6:
+            raise ValueError("MAC must be 6 bytes")
+    except ValueError as e:
+        print(f"Error: invalid --mac: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Set up logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    from .hal import SX1302, BEACON_FREQ_HZ
+
+    session = GatewaySession(
+        gw_mac=gw_mac,
+        pairing_key=bytes.fromhex(
+            "47be3dffb41ea35749c9290e6d2124e6b3e3842ab4e443bd0ac41eda045c2dbe"
+        ),
+        beacon_interval=args.beacon_interval,
+    )
+
+    # CSV logging
+    csv_file = None
+    csv_writer = None
+    if args.log:
+        csv_file = open(args.log, "a", newline="")
+        csv_writer = csv.writer(csv_file)
+        if csv_file.tell() == 0:
+            csv_writer.writerow([
+                "timestamp", "direction", "state", "mac", "seq",
+                "dctrl", "size", "payload", "interpretation",
+            ])
+
+    hal = None
+    try:
+        hal = SX1302()
+        log.info("Starting SX1302 concentrator...")
+        hal.start()
+        log.info("Concentrator started (HAL %s)", hal.version())
+
+        session.start()
+        log.info("Gateway MAC: %s — beaconing on %.1f MHz",
+                 format_mac(gw_mac), BEACON_FREQ_HZ / 1e6)
+
+        while True:
+            # Send beacon if due
+            if session.beacon_due():
+                beacon = session.build_beacon()
+                hal.send(BEACON_FREQ_HZ, beacon)
+                log.info("BEACON TX %.1f MHz (%d bytes)",
+                         BEACON_FREQ_HZ / 1e6, len(beacon))
+
+            # Poll for RX packets
+            for pkt in hal.receive():
+                if not pkt.crc_ok:
+                    continue
+                frame = session.handle_rx(pkt.payload)
+                if frame and csv_writer:
+                    from datetime import datetime, timezone
+                    csv_writer.writerow([
+                        datetime.now(timezone.utc).isoformat(),
+                        frame.direction,
+                        session.state.value,
+                        format_mac(frame.mac),
+                        f"{frame.seq_hi:02X}.{frame.seq_lo:02X}",
+                        f"{frame.dctrl:02X}",
+                        len(pkt.payload),
+                        frame.payload.hex() if frame.payload else "",
+                        frame.interpretation or "",
+                    ])
+                    csv_file.flush()
+
+            time.sleep(0.01)
+
+    except KeyboardInterrupt:
+        log.info("Shutting down...")
+    finally:
+        if hal:
+            hal.stop()
+        if csv_file:
+            csv_file.close()
