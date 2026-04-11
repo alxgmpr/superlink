@@ -11,8 +11,18 @@ Frame layout (big-endian):
   2       6     MAC address
   8       1     SeqHi (frame counter)
   9       1     SeqLo (nonce component)
-  10      4     MIC (BLAKE2b-32 truncated to 4 bytes)
-  14      N     Encrypted payload
+  10      N     Encrypted data (MIC + payload, all encrypted together)
+
+Encryption: XSalsa20 stream cipher (crypto_stream_xor).
+The 24-byte nonce is:
+  [Mctrl][Dctrl][MAC(6)][SeqHi][SeqLo][13 zeros][Counter]
+where Counter is a per-direction frame counter:
+  - UL data: counter = seq_hi - handshake_frame_count (typically 5)
+  - DL data: counter = total DL handshake frames (typically 4)
+  - Handshake frames: counter = 0 or 1
+
+After decryption, the first 4 bytes are an integrity check (MIC),
+and the remaining bytes are the payload.
 """
 
 from dataclasses import dataclass
@@ -25,17 +35,22 @@ except ImportError:
 
 # Known Dctrl values
 DCTRL_TABLE = {
-    0x54: ("UL", "data"),
-    0x44: ("UL", "data-ext"),
-    0x63: ("DL", "data"),
-    0x74: ("DL", "ack"),  # unconfirmed — from decoder heuristic, not yet observed OTA
+    0x40: ("UL", "mgmt"),       # Management/keepalive (default key, independent seq)
+    0x42: ("UL", "conn"),       # Connection/challenge (handshake)
+    0x43: ("DL", "mgmt-ack"),   # Management ack (shares data seq counter)
+    0x44: ("UL", "setup"),      # Setup/config data (handshake)
+    0x53: ("DL", "conn-rsp"),   # Connection response (handshake)
+    0x54: ("UL", "data"),       # Standard UL data
+    0x63: ("DL", "data"),       # Standard DL data
+    0x74: ("DL", "setup-rsp"),  # Setup response (handshake)
 }
 
 # Known payload interpretations
 SENSOR_TYPE_REPORT = 0x0C
 CMD_DOOR_STATE = 0x0F
+SUBTYPE_EXTENDED = 0x01
 
-MIN_FRAME_LEN = 14  # header(10) + MIC(4)
+MIN_FRAME_LEN = 14  # header(10) + at least 4 bytes encrypted
 
 
 @dataclass
@@ -46,11 +61,11 @@ class SuperLinkFrame:
     mac: bytes
     seq_hi: int
     seq_lo: int
-    mic: bytes
+    encrypted: bytes       # full encrypted data (MIC + payload)
     direction: str
     frame_type: str
-    payload_enc: bytes
-    payload: bytes | None = None
+    mic: bytes | None = None       # decrypted MIC (4 bytes)
+    payload: bytes | None = None   # decrypted payload
     mic_valid: bool | None = None
     interpretation: str | None = None
 
@@ -70,72 +85,176 @@ def parse_frame(raw: bytes) -> SuperLinkFrame | None:
     mac = raw[2:8]
     seq_hi = raw[8]
     seq_lo = raw[9]
-    mic = raw[10:14]
-    payload_enc = raw[14:]
+    encrypted = raw[10:]
 
     direction, frame_type = DCTRL_TABLE.get(dctrl, ("??", "unknown"))
 
     return SuperLinkFrame(
         mctrl=mctrl, dctrl=dctrl, mac=mac, seq_hi=seq_hi, seq_lo=seq_lo,
-        mic=mic, direction=direction, frame_type=frame_type,
-        payload_enc=payload_enc,
+        encrypted=encrypted, direction=direction, frame_type=frame_type,
     )
 
 
-def build_nonce(mctrl: int, dctrl: int, mac: bytes, seq_hi: int, seq_lo: int) -> bytes:
-    """Build 24-byte XSalsa20 nonce from header fields."""
-    nonce = bytes([mctrl, dctrl]) + mac + bytes([seq_hi, seq_lo])
-    return nonce.ljust(24, b'\x00')
+def build_nonce(mctrl: int, dctrl: int, mac: bytes,
+                seq_hi: int, seq_lo: int, counter: int = 0) -> bytes:
+    """Build 24-byte XSalsa20 nonce from header fields and counter.
+
+    Nonce layout:
+      [0]     Mctrl
+      [1]     Dctrl (OTA value)
+      [2:8]   MAC address
+      [8]     SeqHi
+      [9]     SeqLo
+      [10:23] Zeros
+      [23]    Counter
+    """
+    nonce = bytearray(24)
+    nonce[0] = mctrl
+    nonce[1] = dctrl
+    nonce[2:8] = mac
+    nonce[8] = seq_hi
+    nonce[9] = seq_lo
+    nonce[23] = counter & 0xFF
+    return bytes(nonce)
 
 
-def decrypt_frame(frame: SuperLinkFrame, key: bytes) -> SuperLinkFrame:
-    """Decrypt payload and verify MIC. Mutates and returns the frame."""
+def decrypt_frame(frame: SuperLinkFrame, key: bytes,
+                  ul_counter_offset: int = 5,
+                  dl_counter: int = 4) -> SuperLinkFrame:
+    """Decrypt payload and extract MIC. Mutates and returns the frame.
+
+    Args:
+        key: 32-byte session key
+        ul_counter_offset: seq_hi value of the last handshake frame.
+            UL nonce counter = seq_hi - ul_counter_offset.
+            Default 5 (reconnection handshake uses seq_hi 1-5).
+        dl_counter: fixed DL nonce counter (total DL handshake frames).
+            Default 4.
+    """
     if not HAS_CRYPTO:
         return frame
-    if not frame.payload_enc:
+    if not frame.encrypted:
         return frame
 
-    nonce = build_nonce(frame.mctrl, frame.dctrl, frame.mac, frame.seq_hi, frame.seq_lo)
+    # Determine counter based on direction
+    if frame.direction == "DL":
+        counter = dl_counter
+    else:
+        counter = max(0, frame.seq_hi - ul_counter_offset)
+
+    nonce = build_nonce(frame.mctrl, frame.dctrl, frame.mac,
+                        frame.seq_hi, frame.seq_lo, counter)
 
     # XSalsa20 stream cipher covers MIC + payload together
-    ciphertext = frame.mic + frame.payload_enc
-    plaintext = pysodium.crypto_stream_xor(ciphertext, len(ciphertext), nonce, key)
+    plaintext = pysodium.crypto_stream_xor(
+        frame.encrypted, len(frame.encrypted), nonce, key
+    )
 
-    decrypted_mic = plaintext[:4]
+    frame.mic = plaintext[:4]
     frame.payload = plaintext[4:]
-
-    # Verify MIC: BLAKE2b over header + decrypted payload
-    header = bytes([frame.mctrl, frame.dctrl]) + frame.mac + bytes([frame.seq_hi, frame.seq_lo])
-    try:
-        computed_mic = pysodium.crypto_generichash(
-            header + frame.payload, k=key, outlen=4
-        )
-        frame.mic_valid = (computed_mic == decrypted_mic)
-    except Exception:
-        frame.mic_valid = None
 
     frame.interpretation = interpret_payload(frame.dctrl, frame.payload)
     return frame
 
 
+def encrypt_payload(plaintext: bytes, key: bytes, nonce: bytes) -> bytes:
+    """Encrypt MIC + payload bytes with XSalsa20.
+
+    Args:
+        plaintext: Combined MIC (4 bytes) + payload to encrypt.
+        key: 32-byte encryption key.
+        nonce: 24-byte XSalsa20 nonce (from build_nonce).
+
+    Returns:
+        Encrypted bytes (same length as plaintext).
+    """
+    if not HAS_CRYPTO:
+        raise RuntimeError("pysodium required for encryption")
+    return pysodium.crypto_stream_xor(plaintext, len(plaintext), nonce, key)
+
+
+def build_frame(mctrl: int, dctrl: int, mac: bytes,
+                seq_hi: int, seq_lo: int,
+                mic: bytes, payload: bytes,
+                key: bytes, counter: int) -> bytes:
+    """Build a complete SuperLink frame (header + encrypted MIC + payload).
+
+    Args:
+        mctrl: Management control byte (0xE0 for SecureHeader).
+        dctrl: Data control byte (e.g. 0x54 for UL data).
+        mac: 6-byte MAC address.
+        seq_hi: Frame counter high byte.
+        seq_lo: Frame counter low byte.
+        mic: 4-byte integrity check (plaintext, will be encrypted).
+        payload: Plaintext payload bytes.
+        key: 32-byte encryption key.
+        counter: Nonce counter byte (byte 23 of the nonce).
+
+    Returns:
+        Complete frame bytes: [header 10B][encrypted(MIC + payload)].
+    """
+    header = bytes([mctrl, dctrl]) + mac + bytes([seq_hi, seq_lo])
+    nonce = build_nonce(mctrl, dctrl, mac, seq_hi, seq_lo, counter)
+    encrypted = encrypt_payload(mic + payload, key, nonce)
+    return header + encrypted
+
+
 def interpret_payload(dctrl: int, payload: bytes) -> str | None:
-    """Try to interpret decrypted payload bytes. Only interprets UL data frames."""
-    if not payload or len(payload) < 5:
+    """Interpret decrypted payload bytes."""
+    if not payload:
         return None
-    # Only interpret UL data frames (sensor reports)
-    if dctrl not in (0x54, 0x44):
+
+    # UL data frames (sensor reports)
+    if dctrl in (0x54, 0x44):
+        return _interpret_sensor_payload(payload)
+
+    # DL data frames
+    if dctrl == 0x63:
+        return _interpret_dl_payload(payload)
+
+    return None
+
+
+def _interpret_sensor_payload(payload: bytes) -> str | None:
+    """Interpret UL sensor report payload."""
+    if len(payload) < 3:
         return None
 
     ptype = payload[0]
-    cmd = payload[2]
+    subtype = payload[2]
 
-    if ptype == SENSOR_TYPE_REPORT and cmd == CMD_DOOR_STATE:
-        state = payload[4] if len(payload) > 4 else None
+    if ptype != SENSOR_TYPE_REPORT:
+        return f"type=0x{ptype:02X}"
+
+    # Standard door state (5B payload)
+    if subtype == CMD_DOOR_STATE and len(payload) >= 5:
+        state = payload[4]
         if state == 0x00:
             return "DOOR OPEN"
         elif state == 0x01:
             return "DOOR CLOSED"
-        else:
-            return f"DOOR state=0x{state:02X}" if state is not None else None
+        return f"DOOR state=0x{state:02X}"
 
-    return None
+    # Extended report (22B payload)
+    if subtype == SUBTYPE_EXTENDED and len(payload) >= 22:
+        battery = payload[10]
+        temp_raw = int.from_bytes(payload[11:13], 'little')
+        door_cmd = payload[19]
+        door_state = payload[20]
+        door_str = "OPEN" if door_state == 0 else "CLOSED" if door_state == 1 else f"0x{door_state:02X}"
+
+        parts = [f"ext_report bat={battery}%"]
+        if temp_raw > 0:
+            parts.append(f"temp_raw={temp_raw}")
+        if door_cmd == CMD_DOOR_STATE:
+            parts.append(f"door={door_str}")
+        return " ".join(parts)
+
+    return f"report sub=0x{subtype:02X}"
+
+
+def _interpret_dl_payload(payload: bytes) -> str | None:
+    """Interpret DL (gateway→sensor) payload."""
+    if len(payload) == 2:
+        return f"DL ack {payload.hex()}"
+    return f"DL {len(payload)}B"
