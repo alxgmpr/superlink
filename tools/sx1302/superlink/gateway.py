@@ -129,11 +129,47 @@ class GatewaySession:
         return frame
 
     def _handle_beaconing(self, frame: SuperLinkFrame) -> SuperLinkFrame | None:
-        """Handle frames in BEACONING state — look for ConnectionReq."""
-        # TODO: Parse ConnectionReq, extract sensor pubkey, transition to DH_EXCHANGE
-        # This requires knowing the ConnectionReq frame format (capture needed)
-        log.debug("RX in BEACONING: dctrl=0x%02X from %s (not yet handled)",
-                  frame.dctrl, format_mac(frame.mac))
+        """Handle frames in BEACONING state.
+
+        Listens for:
+        - 0x40 discovery ads: decrypt with default key, log sensor MAC
+        - 0x42 ConnectionChallenge: extract pubkey, do DH, derive session key
+        """
+        if frame.dctrl == 0x40:
+            # Discovery advertisement — decrypt with default pairing key
+            # counter=0: pass seq_hi as offset so seq_hi - offset = 0
+            frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
+            if frame.payload and len(frame.payload) >= 2 and frame.payload[0] == 0x01:
+                self.sensor_mac = frame.mac
+                log.info("DISCOVERY from %s payload=%s",
+                         format_mac(frame.mac), frame.payload.hex())
+            return frame
+
+        elif frame.dctrl == 0x42:
+            # ConnectionChallenge — extract sensor's DH pubkey and establish session
+            # counter=0: pass seq_hi as offset so seq_hi - offset = 0
+            frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
+            if frame.payload is None or len(frame.payload) < 49:
+                log.warning("ConnectionChallenge too short: %d bytes",
+                            len(frame.payload) if frame.payload else 0)
+                return frame
+
+            # Extract pubkey from payload offset 17 (32 bytes)
+            self._remote_pubkey = frame.payload[17:49]
+            self.sensor_mac = frame.mac
+            log.info("CONN_CHALLENGE from %s pubkey=%s",
+                     format_mac(frame.mac), self._remote_pubkey.hex())
+
+            # Compute DH shared secret and derive session key
+            shared = compute_shared_secret(self._privkey, self._remote_pubkey)
+            # Gateway is NOT initiator: order is (remote=sensor, local=gateway)
+            self.session_key = derive_session_key(shared, self._remote_pubkey, self._pubkey)
+            self._ul_counter_offset = frame.seq_hi
+            self.state = State.ACTIVE
+            log.info("Session key derived, entering ACTIVE state (counter_offset=%d)",
+                     self._ul_counter_offset)
+            return frame
+
         return None
 
 
@@ -180,7 +216,7 @@ def main():
         datefmt="%H:%M:%S",
     )
 
-    from .hal import SX1302, BEACON_FREQ_HZ
+    from .hal import SX1302
 
     session = GatewaySession(
         gw_mac=gw_mac,
@@ -210,16 +246,10 @@ def main():
         log.info("Concentrator started (HAL %s)", hal.version())
 
         session.start()
-        log.info("Gateway MAC: %s — beaconing on %.1f MHz",
-                 format_mac(gw_mac), BEACON_FREQ_HZ / 1e6)
+        log.info("Gateway MAC: %s — listening on UL channels", format_mac(gw_mac))
 
         while True:
-            # Send beacon if due
-            if session.beacon_due():
-                beacon = session.build_beacon()
-                hal.send(BEACON_FREQ_HZ, beacon)
-                log.info("BEACON TX %.1f MHz (%d bytes)",
-                         BEACON_FREQ_HZ / 1e6, len(beacon))
+            # No beacon needed — sensor discovers by sending 0x40 on UL channels
 
             # Poll for RX packets
             for pkt in hal.receive():

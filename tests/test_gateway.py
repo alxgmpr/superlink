@@ -168,3 +168,87 @@ def test_sensor_frame_decrypted_by_gateway():
     assert result is not None
     assert result.payload == payload
     assert result.mic == mic
+
+
+def test_handle_discovery_in_beaconing():
+    """In BEACONING state, 0x40 frames should be decrypted and sensor MAC recorded."""
+    from tests.fixtures.captured_frames import DISCOVERY_FRAME_RAW
+
+    gw_mac = bytes.fromhex("AABBCCDDEEFF")
+    session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
+    session.start()
+
+    result = session.handle_rx(DISCOVERY_FRAME_RAW)
+    assert result is not None
+    assert result.payload is not None
+    assert result.payload[0] == 0x01  # discovery type
+    assert result.payload[1:3] == b"\xAE\x94"  # discovery marker
+    assert session.sensor_mac == SENSOR_MAC
+    assert session.state == State.BEACONING  # stays in BEACONING
+
+
+def test_handle_connection_challenge():
+    """0x42 ConnectionChallenge should extract pubkey and derive session key."""
+    from tests.fixtures.captured_frames import (
+        CONN_CHALLENGE_RAW, CONN_CHALLENGE_SENSOR_PUBKEY,
+    )
+
+    gw_mac = bytes.fromhex("AABBCCDDEEFF")
+    session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
+    session.start()
+
+    result = session.handle_rx(CONN_CHALLENGE_RAW)
+    assert result is not None
+    assert session.sensor_mac == SENSOR_MAC
+    assert session._remote_pubkey == CONN_CHALLENGE_SENSOR_PUBKEY
+    assert session.session_key is not None
+    assert len(session.session_key) == 32
+    assert session.state == State.ACTIVE
+
+
+def test_connection_challenge_derives_correct_key():
+    """After ConnectionChallenge, session key should decrypt data from that sensor."""
+    from superlink.decoder import build_frame
+    from superlink.crypto import (
+        generate_keypair, compute_shared_secret, derive_session_key,
+    )
+
+    gw_mac = bytes.fromhex("AABBCCDDEEFF")
+    session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
+    session.start()
+
+    # Manually craft a ConnectionChallenge with a known sensor keypair
+    sensor_priv, sensor_pub = generate_keypair()
+
+    # Build the 0x42 payload: [17 header bytes] + [32 byte pubkey]
+    header_bytes = bytes([0x01, 0x02, 0x01, 0x5D, 0x0B, 0x05,
+                          0x68, 0x21, 0x90, 0xF8, 0xB4, 0x06,
+                          0x2B, 0x47, 0xC7, 0x2F, 0xA5])
+    challenge_payload = header_bytes + sensor_pub
+    mic = b"\x00" * 4
+
+    raw = build_frame(0xE0, 0x42, SENSOR_MAC, 0x10, 0x55,
+                      mic, challenge_payload, DEFAULT_PAIRING_KEY, counter=0)
+
+    session.handle_rx(raw)
+    assert session.state == State.ACTIVE
+    assert session.session_key is not None
+
+    # Now compute what the sensor would derive as session key
+    sensor_shared = compute_shared_secret(sensor_priv, session._pubkey)
+    # Sensor is initiator: first=local(sensor), second=remote(gateway)
+    # Both sides produce (sensor_pub, gw_pub) order
+    sensor_key = derive_session_key(sensor_shared, sensor_pub, session._pubkey)
+
+    assert session.session_key == sensor_key
+
+    # Verify: a frame encrypted by the sensor decrypts correctly
+    data_payload = b"\x0C\x00\x0F\x00\x01"
+    data_mic = b"\xDE\xAD\xBE\xEF"
+    seq_hi = session._ul_counter_offset + 1
+    data_raw = build_frame(0xE0, 0x54, SENSOR_MAC, seq_hi, 0x99,
+                           data_mic, data_payload, sensor_key, counter=1)
+
+    result = session.handle_rx(data_raw)
+    assert result is not None
+    assert result.payload == data_payload
