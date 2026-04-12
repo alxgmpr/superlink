@@ -84,3 +84,51 @@ def test_derive_session_key_with_context():
     key2 = derive_session_key(shared, pub_a, pub_b, context=b"extra")
 
     assert key1 != key2
+
+
+def test_build_challenge_nonce_request():
+    """Challenge request nonce: 16 zero bytes + 'UBNU'."""
+    from superlink.crypto import build_challenge_nonce
+    nonce = build_challenge_nonce(is_response=False)
+    assert len(nonce) == 24
+    assert nonce[:16] == b"\x00" * 16
+    assert nonce[16:20] == b"UBNU"
+    # Bytes 20-23 are padding zeros
+    assert nonce[20:] == b"\x00" * 4
+
+
+def test_build_challenge_nonce_response():
+    """Challenge response nonce: 16 zero bytes + 'UBNV'."""
+    from superlink.crypto import build_challenge_nonce
+    nonce = build_challenge_nonce(is_response=True)
+    assert len(nonce) == 24
+    assert nonce[:16] == b"\x00" * 16
+    assert nonce[16:20] == b"UBNV"
+
+
+def test_secretbox_roundtrip():
+    """crypto_secretbox encrypt then decrypt should recover plaintext."""
+    from superlink.crypto import secretbox_encrypt, secretbox_decrypt
+    key = bytes(range(32))
+    nonce = bytes(24)
+    plaintext = b"hello superlink"
+
+    ciphertext = secretbox_encrypt(plaintext, nonce, key)
+    # crypto_secretbox adds 16-byte Poly1305 MAC
+    assert len(ciphertext) == len(plaintext) + 16
+    assert ciphertext != plaintext
+
+    recovered = secretbox_decrypt(ciphertext, nonce, key)
+    assert recovered == plaintext
+
+
+def test_secretbox_wrong_key_fails():
+    """Decryption with wrong key should raise."""
+    from superlink.crypto import secretbox_encrypt, secretbox_decrypt
+    key = bytes(range(32))
+    wrong_key = bytes(range(1, 33))
+    nonce = bytes(24)
+    ciphertext = secretbox_encrypt(b"test", nonce, key)
+
+    with pytest.raises(Exception):
+        secretbox_decrypt(ciphertext, nonce, wrong_key)

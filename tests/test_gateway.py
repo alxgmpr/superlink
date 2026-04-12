@@ -122,11 +122,11 @@ def test_dh_full_exchange():
     sensor_shared = compute_shared_secret(sensor_priv, gw_pub)
     assert gw_shared == sensor_shared
 
-    # Gateway derives session key (is_initiator=False: first=local, second=remote)
-    gw_session_key = derive_session_key(gw_shared, gw_pub, sensor_pub)
+    # Gateway derives session key (is_initiator=False: first=remote, second=local)
+    gw_session_key = derive_session_key(gw_shared, sensor_pub, gw_pub)
 
-    # Sensor derives session key (is_initiator=True: first=remote, second=local)
-    sensor_session_key = derive_session_key(sensor_shared, gw_pub, sensor_pub)
+    # Sensor derives session key (is_initiator=True: first=local, second=remote)
+    sensor_session_key = derive_session_key(sensor_shared, sensor_pub, gw_pub)
 
     # Both must derive the same key
     assert gw_session_key == sensor_session_key
@@ -144,7 +144,7 @@ def test_sensor_frame_decrypted_by_gateway():
     gw_priv, gw_pub = generate_keypair()
     sensor_priv, sensor_pub = generate_keypair()
     shared = compute_shared_secret(gw_priv, sensor_pub)
-    session_key = derive_session_key(shared, gw_pub, sensor_pub)
+    session_key = derive_session_key(shared, sensor_pub, gw_pub)
 
     # Sensor builds a UL data frame
     sensor_mac = SENSOR_MAC

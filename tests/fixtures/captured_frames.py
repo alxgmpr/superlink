@@ -72,6 +72,37 @@ CHALLENGE_RSP_NONCE_SUFFIX = bytes.fromhex("55424e56")  # "UBNV"
 UL_COUNTER_OFFSET = 5   # UL data counter = seq_hi - 5 (for reconnection)
 DL_COUNTER = 4           # DL data counter = 4 (fixed after reconnection handshake)
 
+# --- Initial pairing capture (2026-04-12) ---
+# Sensor factory-reset, adopted by Ubiquiti gateway while sniffing
+
+# Discovery advertisement (0x40, default pairing key, counter=0)
+# Payload decrypts to: 01 AE 94 XX 00 00 00 00 (XX = incrementing counter)
+DISCOVERY_FRAME_RAW = bytes.fromhex("e0409041b22e9a53ab0685767ec4d241c152ee06610b")
+DISCOVERY_PAYLOAD = bytes.fromhex("01ae940000000000")
+
+# ConnectionChallenge (0x42, default pairing key, counter=0, 49B payload)
+# Contains sensor's Curve25519 pubkey at payload offset 17
+CONN_CHALLENGE_RAW = bytes.fromhex(
+    "e0429041b22e9a53ae3cd84dfd259f95149565be52376074770e70475d04b6aa"
+    "357ed40ef4f847618cfe4665fb1c8c08c55d4a2adb57cbb5c572c0e492f447"
+)
+CONN_CHALLENGE_PAYLOAD = bytes.fromhex(
+    "0102015d0b05682190f8b4062b47c72fa57f36ecc60aaccccd6776be392d8f6b"
+    "d509797cc1c1bacfbca4df836f03feff03"
+)
+# Pubkey is at payload[17:49]
+CONN_CHALLENGE_SENSOR_PUBKEY = CONN_CHALLENGE_PAYLOAD[17:49]
+
+# Gateway DL ACK captured (0x63, 16B, session key)
+PAIRING_DL_ACK_RAW = bytes.fromhex("e0639041b22e9a5302828a24b9bc4c9d")
+
+# Gateway DL setup response (0x74, 19B, session key)
+PAIRING_DL_SETUP_RSP_RAW = bytes.fromhex("e0749041b22e9a530401aea9bfd9bf70c98310")
+
+# Connection message types (from Ghidra binary analysis of FUN_000524ac)
+CONN_MSG_TYPE_REQ = 0       # ConnectionReq (case 0)
+CONN_MSG_TYPE_CHALLENGE = 2  # ConnectionChallenge (case 2)
+
 # --- Channel plan ---
 UL_CHANNELS_HZ = [
     915_600_000, 915_800_000, 916_000_000, 916_200_000,
