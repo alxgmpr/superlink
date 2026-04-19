@@ -93,6 +93,17 @@ One frame per channel, ~2s TX interval, full 8-channel cycle takes ~16 seconds.
 The gateway listens on all 8 UL channels simultaneously and responds on the paired DL channel.
 A single-channel SX1262 sniffer captures roughly 1/8 of packets when parked on one channel.
 
+## Gateway Emulator
+
+A standalone Python gateway running on a Raspberry Pi + SX1302 concentrator
+board. It implements the SuperLink MAC well enough to pair with a
+factory-default sensor over the air — Curve25519 DH exchange, BLAKE2b session
+key derivation, XSalsa20-Poly1305 authenticated DL frames, and a connection
+state machine (beacon → ConnReq → DH → challenge → active). Lives in
+`tools/sx1302/superlink/` as a Python package with modules for the HAL,
+decoder/encoder, crypto, and the gateway state machine, plus TX and delay
+sweep harnesses for tuning DL responses.
+
 ## Repository Structure
 
 ```
@@ -100,10 +111,14 @@ superlink/
 ├── docs/protocol/          — frame format, crypto, channel plan, OTA captures
 ├── docs/teardowns/         — hardware component identification
 ├── tools/sniffer/          — PlatformIO project: Heltec V3 + SX1262 packet sniffer
+├── tools/sx1302/           — SX1302-based Pi gateway: sniffer, emulator, sweeps
+│   └── superlink/          — Python package (hal, decoder, crypto, gateway, cli)
+├── tools/emulator/         — sensor-side emulator scaffolding
+├── tools/keyhook/          — runtime key capture helper for lorabrd
 ├── tools/decoder/          — placeholder for Wireshark dissector
 ├── tools/sdr/              — GNU Radio capture notes
 ├── firmware/dumps/         — extracted firmware images (gitignored)
-├── src/                    — future protocol implementation
+├── src/                    — reserved for protocol library (currently empty)
 └── research/               — research tracking
 ```
 
