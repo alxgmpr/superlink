@@ -67,3 +67,28 @@ def test_nonce_counter_zero_padding():
     """Bytes 10-22 must be zero."""
     nonce = build_nonce(0xE0, 0x54, SENSOR_MAC, 0x07, 0x2D, counter=2)
     assert nonce[10:23] == b"\x00" * 13
+
+
+def test_mic_matches_captured_0x62():
+    """MIC computed with zeroed-field scheme must match the real gateway's 0x62 frame."""
+    from superlink.decoder import compute_mic
+    import pysodium
+    from tests.fixtures.captured_frames import DEFAULT_PAIRING_KEY
+
+    raw = bytes.fromhex(
+        "e0629041b22e9a538902"
+        "cf74f5ab8308752f4a34947fdd262cbfe128958e65e9"
+        "e1272713b5516796603c4e07d5d8e256224a210dc6f78a"
+    )
+    header = raw[:10]
+    encrypted = raw[10:]
+
+    # Decrypt with pairing key, counter=0
+    nonce = build_nonce(0xE0, 0x62, SENSOR_MAC, 0x89, 0x02, counter=0)
+    plaintext = pysodium.crypto_stream_xor(encrypted, len(encrypted), nonce, DEFAULT_PAIRING_KEY)
+    frame_mic = plaintext[:4]
+    payload = plaintext[4:]
+
+    # MIC = BLAKE2b(header + 0000 + payload, outlen=4)
+    computed = compute_mic(header, payload)
+    assert computed == frame_mic, f"MIC mismatch: {computed.hex()} != {frame_mic.hex()}"

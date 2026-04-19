@@ -34,13 +34,17 @@ except ImportError:
     HAS_CRYPTO = False
 
 # Known Dctrl values
+# Lower 3 bits encode message type (dispatch key in firmware RB tree):
+#   0=discovery, 2=connection, 3=management, 4=data/setup
+# Upper bits encode phase/direction.
 DCTRL_TABLE = {
-    0x40: ("UL", "mgmt"),       # Management/keepalive (default key, independent seq)
-    0x42: ("UL", "conn"),       # Connection/challenge (handshake)
+    0x40: ("UL", "discovery"),  # Discovery advertisement (default key)
+    0x42: ("UL", "conn"),       # Connection challenge (handshake)
     0x43: ("DL", "mgmt-ack"),   # Management ack (shares data seq counter)
     0x44: ("UL", "setup"),      # Setup/config data (handshake)
-    0x53: ("DL", "conn-rsp"),   # Connection response (handshake)
+    0x53: ("DL", "mgmt-dl"),    # DL management (lower 3 bits = 3 = mgmt handler)
     0x54: ("UL", "data"),       # Standard UL data
+    0x62: ("DL", "conn-rsp"),   # Connection response (handshake, real gateway)
     0x63: ("DL", "data"),       # Standard DL data
     0x74: ("DL", "setup-rsp"),  # Setup response (handshake)
 }
@@ -154,6 +158,20 @@ def decrypt_frame(frame: SuperLinkFrame, key: bytes,
 
     frame.interpretation = interpret_payload(frame.dctrl, frame.payload)
     return frame
+
+
+def compute_mic(header: bytes, payload: bytes) -> bytes:
+    """Compute 4-byte BLAKE2b integrity check.
+
+    From firmware RE (sub_55d26): the MIC field is zeroed before hashing.
+    Hash input: header (10B) + 4 zero bytes (MIC placeholder) + payload.
+    Unkeyed BLAKE2b with 4-byte digest.
+    """
+    if not HAS_CRYPTO:
+        raise RuntimeError("pysodium required for MIC")
+    return pysodium.crypto_generichash(
+        header + b'\x00\x00\x00\x00' + payload, k=b'', outlen=4
+    )
 
 
 def encrypt_payload(plaintext: bytes, key: bytes, nonce: bytes) -> bytes:
