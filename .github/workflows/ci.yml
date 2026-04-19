@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  sniffer-build:
+    name: Build sniffer firmware
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO core
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/.cache
+            ~/.platformio/packages
+            ~/.platformio/platforms
+          key: pio-core-${{ runner.os }}-${{ hashFiles('tools/sniffer/platformio.ini') }}
+          restore-keys: |
+            pio-core-${{ runner.os }}-
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-platformio
+
+      - name: Cache sniffer build dir
+        uses: actions/cache@v4
+        with:
+          path: tools/sniffer/.pio/build
+          key: pio-build-${{ runner.os }}-${{ hashFiles('tools/sniffer/platformio.ini', 'tools/sniffer/src/**') }}
+          restore-keys: |
+            pio-build-${{ runner.os }}-
+
+      - name: Install PlatformIO
+        run: pip install --upgrade platformio
+
+      - name: Build
+        working-directory: tools/sniffer
+        run: pio run
+
+  docs-lint:
+    name: Lint markdown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DavidAnson/markdownlint-cli2-action@v16
+        with:
+          globs: "docs/**/*.md *.md"
