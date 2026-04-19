@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from .crypto import generate_keypair, compute_shared_secret, derive_session_key
 from .decoder import (
-    build_frame, build_nonce, decrypt_frame, encrypt_payload,
+    build_frame, build_nonce, compute_mic, decrypt_frame, encrypt_payload,
     format_mac, parse_frame, SuperLinkFrame, DCTRL_TABLE,
 )
 
@@ -87,27 +87,32 @@ class GatewaySession:
         log.info("Built beacon frame (%d bytes)", len(header))
         return header
 
-    def handle_rx(self, raw: bytes) -> SuperLinkFrame | None:
+    def handle_rx(self, raw: bytes, ul_channel: int = 0
+                  ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
         """Process a received frame based on current state.
 
         Args:
             raw: Raw frame bytes from HAL.
+            ul_channel: UL channel number (1-8) the frame was received on.
 
         Returns:
-            Decoded frame if successfully processed, None otherwise.
+            (frame, tx_data, tx_freq_hz):
+              frame: Decoded frame if successfully processed, None otherwise.
+              tx_data: Raw bytes to transmit in response, or None.
+              tx_freq_hz: Frequency in Hz for the TX, or 0.
         """
         frame = parse_frame(raw)
         if frame is None:
-            return None
+            return None, None, 0
 
         if self.state == State.ACTIVE:
-            return self._handle_active(frame)
+            return self._handle_active(frame), None, 0
         elif self.state == State.BEACONING:
-            return self._handle_beaconing(frame)
+            return self._handle_beaconing(frame, ul_channel)
 
         log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
                   self.state.value, frame.dctrl, format_mac(frame.mac))
-        return None
+        return None, None, 0
 
     def _handle_active(self, frame: SuperLinkFrame) -> SuperLinkFrame | None:
         """Handle frames in ACTIVE state — decrypt UL data."""
@@ -128,22 +133,63 @@ class GatewaySession:
                  frame.interpretation or (frame.payload.hex() if frame.payload else "?"))
         return frame
 
-    def _handle_beaconing(self, frame: SuperLinkFrame) -> SuperLinkFrame | None:
+    def _handle_beaconing(self, frame: SuperLinkFrame, ul_channel: int = 0
+                          ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
         """Handle frames in BEACONING state.
 
         Listens for:
-        - 0x40 discovery ads: decrypt with default key, log sensor MAC
+        - 0x40 discovery ads: respond with 0x62 ConnectionRsp (DH pubkey)
         - 0x42 ConnectionChallenge: extract pubkey, do DH, derive session key
         """
+        from .hal import DL_FREQ_HZ, BW_500KHZ
+
         if frame.dctrl == 0x40:
             # Discovery advertisement — decrypt with default pairing key
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
             if frame.payload and len(frame.payload) >= 2 and frame.payload[0] == 0x01:
                 self.sensor_mac = frame.mac
-                log.info("DISCOVERY from %s payload=%s",
-                         format_mac(frame.mac), frame.payload.hex())
-            return frame
+                log.info("DISCOVERY from %s ch=%d payload=%s",
+                         format_mac(frame.mac), ul_channel, frame.payload.hex())
+
+                # Build 0x62 ConnectionRsp on paired DL channel
+                # dctrl=0x62: lower 3 bits = 2 → connection handler (sub_524ac)
+                # Captured from real Ubiquiti gateway DL response.
+                # Sensor dispatches via inner type switch:
+                #   case 0 → sub_51914 (initial pairing: extract pubkey, send 0x42)
+                #   case 2 → sub_52090 (reconnection/challenge)
+                if 1 <= ul_channel <= 8:
+                    dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                    self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
+
+                    # ConnectionRsp payload format (41 bytes, from captured frame):
+                    #   [0:2]  = 01 01 (connection type, inner type)
+                    #   [2:9]  = 7-byte inner header (copied from capture)
+                    #   [9:41] = 32-byte Curve25519 DH public key
+                    # The 7-byte inner header was captured from the real gateway.
+                    # TODO: RE the exact meaning of these 7 header bytes.
+                    captured_inner_hdr = bytes.fromhex('74ad9482f05344')
+                    inner_payload = (
+                        b'\x01\x01'
+                        + captured_inner_hdr
+                        + self._pubkey
+                    )
+
+                    header = bytes([0xE0, 0x62]) + frame.mac + bytes([
+                        self._tx_seq_hi, self._tx_seq_lo])
+                    mic = compute_mic(header, inner_payload)
+                    tx_frame = build_frame(
+                        0xE0, 0x62, frame.mac,
+                        self._tx_seq_hi, self._tx_seq_lo,
+                        mic, inner_payload,
+                        self.pairing_key, counter=0,
+                    )
+                    log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, pubkey=%s...)",
+                             format_mac(frame.mac), dl_freq / 1e6, len(tx_frame),
+                             self._pubkey[:8].hex())
+                    return frame, tx_frame, dl_freq
+
+            return frame, None, 0
 
         elif frame.dctrl == 0x42:
             # ConnectionChallenge — extract sensor's DH pubkey and establish session
@@ -152,7 +198,7 @@ class GatewaySession:
             if frame.payload is None or len(frame.payload) < 49:
                 log.warning("ConnectionChallenge too short: %d bytes",
                             len(frame.payload) if frame.payload else 0)
-                return frame
+                return frame, None, 0
 
             # Extract pubkey from payload offset 17 (32 bytes)
             self._remote_pubkey = frame.payload[17:49]
@@ -168,9 +214,31 @@ class GatewaySession:
             self.state = State.ACTIVE
             log.info("Session key derived, entering ACTIVE state (counter_offset=%d)",
                      self._ul_counter_offset)
-            return frame
 
-        return None
+            # Send 0x62 ChallengeRsp on paired DL channel
+            if 1 <= ul_channel <= 8:
+                dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
+
+                # ChallengeRsp: inner type 2, minimal payload
+                # dctrl=0x62 (connection handler, same as ConnRsp)
+                challenge_rsp = bytes([0x01, 0x02])  # type=conn, inner=ChallengeRsp
+                header = bytes([0xE0, 0x62]) + frame.mac + bytes([
+                    self._tx_seq_hi, self._tx_seq_lo])
+                mic = compute_mic(header, challenge_rsp)
+                tx_frame = build_frame(
+                    0xE0, 0x62, frame.mac,
+                    self._tx_seq_hi, self._tx_seq_lo,
+                    mic, challenge_rsp,
+                    self.pairing_key, counter=0,
+                )
+                log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz (%d bytes)",
+                         format_mac(frame.mac), dl_freq / 1e6, len(tx_frame))
+                return frame, tx_frame, dl_freq
+
+            return frame, None, 0
+
+        return None, None, 0
 
 
 def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -194,6 +262,14 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--verbose", action="store_true",
         help="Print raw hex and crypto details",
     )
+    parser.add_argument(
+        "--tx-delay", type=int, default=0, metavar="US",
+        help="TX delay in microseconds after RX (0=immediate, try 1000000 for 1s)",
+    )
+    parser.add_argument(
+        "--invert-iq", action="store_true",
+        help="Invert IQ polarization for DL TX (LoRaWAN convention)",
+    )
     return parser.parse_args(argv)
 
 
@@ -212,11 +288,11 @@ def main():
     # Set up logging
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
+        format="%(asctime)s.%(msecs)03d %(levelname)s %(message)s",
         datefmt="%H:%M:%S",
     )
 
-    from .hal import SX1302
+    from .hal import SX1302, BW_500KHZ
 
     session = GatewaySession(
         gw_mac=gw_mac,
@@ -255,7 +331,25 @@ def main():
             for pkt in hal.receive():
                 if not pkt.crc_ok:
                     continue
-                frame = session.handle_rx(pkt.payload)
+                t_rx = time.monotonic()
+                frame, tx_data, tx_freq = session.handle_rx(
+                    pkt.payload, ul_channel=pkt.ul_channel)
+
+                # Send DL response if requested
+                if tx_data and tx_freq:
+                    tx_ts = 0
+                    if args.tx_delay:
+                        tx_ts = pkt.timestamp_us + args.tx_delay
+                    t_pre_tx = time.monotonic()
+                    hal.send(tx_freq, tx_data, bandwidth=BW_500KHZ,
+                             tx_timestamp_us=tx_ts,
+                             invert_pol=args.invert_iq)
+                    t_post_tx = time.monotonic()
+                    mode = f"scheduled +{args.tx_delay}us" if tx_ts else "immediate"
+                    log.info("TX %s: process=%.1fms send=%.1fms",
+                             mode, (t_pre_tx - t_rx) * 1000,
+                             (t_post_tx - t_pre_tx) * 1000)
+
                 if frame and csv_writer:
                     csv_writer.writerow([
                         datetime.now(timezone.utc).isoformat(),

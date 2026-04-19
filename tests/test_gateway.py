@@ -62,7 +62,7 @@ def test_handle_ul_data_in_active_state():
     raw = build_frame(0xE0, 0x54, SENSOR_MAC, 0x07, 0x2D,
                       mic, payload, session.session_key, counter=2)
 
-    result = session.handle_rx(raw)
+    result, _, _ = session.handle_rx(raw)
     assert result is not None
     assert result.payload == payload
     assert result.mic == mic
@@ -84,7 +84,7 @@ def test_handle_rx_ignores_wrong_mac():
     raw = build_frame(0xE0, 0x54, wrong_mac, 0x07, 0x2D,
                       b"\x00" * 4, b"\x00" * 5, session.session_key, counter=2)
 
-    result = session.handle_rx(raw)
+    result, _, _ = session.handle_rx(raw)
     assert result is None
 
 
@@ -164,7 +164,7 @@ def test_sensor_frame_decrypted_by_gateway():
     gw.sensor_mac = sensor_mac
     gw._ul_counter_offset = counter_offset
 
-    result = gw.handle_rx(raw)
+    result, _, _ = gw.handle_rx(raw)
     assert result is not None
     assert result.payload == payload
     assert result.mic == mic
@@ -178,13 +178,20 @@ def test_handle_discovery_in_beaconing():
     session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
     session.start()
 
-    result = session.handle_rx(DISCOVERY_FRAME_RAW)
+    result, tx_data, tx_freq = session.handle_rx(DISCOVERY_FRAME_RAW, ul_channel=3)
     assert result is not None
     assert result.payload is not None
     assert result.payload[0] == 0x01  # discovery type
     assert result.payload[1:3] == b"\xAE\x94"  # discovery marker
     assert session.sensor_mac == SENSOR_MAC
     assert session.state == State.BEACONING  # stays in BEACONING
+    # Should produce a 0x62 ConnectionRsp on the paired DL channel
+    assert tx_data is not None
+    assert tx_freq == DL_CHANNELS_HZ[2]  # CH3 → CH11 = 921.6 MHz
+    # Verify dctrl=0x62 (DL conn-rsp) and frame contains gateway DH pubkey
+    assert tx_data[1] == 0x62
+    assert len(tx_data) == 10 + 4 + 41  # header + MIC + ConnectionRsp payload
+    assert session._pubkey is not None
 
 
 def test_handle_connection_challenge():
@@ -197,7 +204,7 @@ def test_handle_connection_challenge():
     session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
     session.start()
 
-    result = session.handle_rx(CONN_CHALLENGE_RAW)
+    result, _, _ = session.handle_rx(CONN_CHALLENGE_RAW)
     assert result is not None
     assert session.sensor_mac == SENSOR_MAC
     assert session._remote_pubkey == CONN_CHALLENGE_SENSOR_PUBKEY
@@ -230,7 +237,7 @@ def test_connection_challenge_derives_correct_key():
     raw = build_frame(0xE0, 0x42, SENSOR_MAC, 0x10, 0x55,
                       mic, challenge_payload, DEFAULT_PAIRING_KEY, counter=0)
 
-    session.handle_rx(raw)
+    session.handle_rx(raw, ul_channel=3)
     assert session.state == State.ACTIVE
     assert session.session_key is not None
 
@@ -249,6 +256,6 @@ def test_connection_challenge_derives_correct_key():
     data_raw = build_frame(0xE0, 0x54, SENSOR_MAC, seq_hi, 0x99,
                            data_mic, data_payload, sensor_key, counter=1)
 
-    result = session.handle_rx(data_raw)
+    result, _, _ = session.handle_rx(data_raw)
     assert result is not None
     assert result.payload == data_payload
