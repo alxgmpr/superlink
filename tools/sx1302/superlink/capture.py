@@ -150,22 +150,24 @@ def main():
                                      args.dl_channel)
 
                     elif frame.dctrl == 0x42:
-                        # ConnectionChallenge — means sensor accepted a 0x53
+                        # ConnectionChallenge — capture raw + decrypted for RE
+                        raw_hex = pkt.payload.hex()
                         frame = decrypt_frame(
                             frame, DEFAULT_PAIRING_KEY,
                             ul_counter_offset=frame.seq_hi,
                         )
+                        dec_hex = frame.payload.hex() if frame.payload else "<decrypt_failed>"
                         log.info(
-                            "UL CH%d  0x42 CONN_CHALLENGE mac=%s "
-                            "seq=%02X.%02X rssi=%.0f size=%d",
+                            "UL CH%d  0x42 mac=%s seq=%02X.%02X rssi=%.0f raw_len=%d dec_len=%d",
                             pkt.ul_channel, format_mac(frame.mac),
                             frame.seq_hi, frame.seq_lo,
                             pkt.rssi, len(pkt.payload),
+                            len(frame.payload) if frame.payload else 0,
                         )
+                        log.info("  RAW 0x42: %s", raw_hex)
+                        log.info("  DEC 0x42: %s", dec_hex)
                         if frame.payload and len(frame.payload) >= 49:
-                            pubkey = frame.payload[17:49]
-                            log.info("  SENSOR PUBKEY: %s", pubkey.hex())
-                        log.info("  Sensor accepted a 0x62! Pairing advancing.")
+                            log.info("  SENSOR PUBKEY: %s", frame.payload[17:49].hex())
                         print()
 
                     elif frame.dctrl in (0x44, 0x54) and args.verbose:
