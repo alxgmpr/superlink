@@ -399,39 +399,92 @@ Specifically:
 - the trailing 32 bytes
 - any optional/random field embedded by the real firmware
 
-## Current Best Interpretation
+## Resolved Layout (2026-04-20 afternoon pass)
 
-The initial pairing failure is now best explained as:
+The `0x62` and `0x42` plaintext structures were cracked by splitting on the
+shared trailer `03 fe ff 03` that appears at the end of **both** frames —
+impossible by chance for random pubkeys (1-in-4-billion).
 
-1. our `0x62` reaches the sensor correctly
-2. the outer `0x62` framing is valid enough for the sensor to reply
-3. the sensor then rejects or downgrades the handshake because the response's
-   stateful contents are wrong
-4. as a result, we never reach the full successful large `0x42` challenge path
+### `0x62` ConnectionRsp (41 bytes)
 
-## What We Still Do Not Know
+```
+[0:2]   01 01                    (outer type, inner_type=ConnRsp=1)
+[2:34]  <32-byte gateway pubkey> (Curve25519, regenerated per-session by sub_3af20)
+[34:37] 0a 00 02                 (random 0..63, optional-present=0, const 2 from sub_444b8)
+[37:41] 03 fe ff 03              (fixed ChMap trailer)
+```
 
-We still need to recover:
+Earlier reading had the pubkey at offset 9 behind a "captured 7-byte header"
+(`74 ad 94 82 f0 53 44`). Those seven bytes in the real capture were **the
+first 7 bytes of the gateway's Curve25519 pubkey**, mistaken for a constant.
 
-- the exact producer/updater of `gateway + 0x44`
-- the exact meaning of the trailing 32 bytes in the real `0x62`
-- the exact mapping of `0x62` payload bytes to:
-  - gateway DH pubkey
-  - challenge
-  - ChMap
-  - discovery/session state
-- the exact large `0x42` field layout for successful initial pairing
-- the challenge `crypto_secretbox` plaintext/KDF details needed to complete the
-  handshake
+### `0x42` ConnectionChallenge (49 bytes)
 
-## Best Next Reverse Targets
+```
+[0:2]   01 02                    (outer type, inner_type=Challenge=2)
+[2:13]  01 5d 0b 05 68 21 90 f8 b4 06 2b  (11-byte challenge/state header)
+[13:45] <32-byte sensor pubkey>  (Curve25519)
+[45:49] 03 fe ff 03              (fixed ChMap trailer — same as 0x62)
+```
 
-Highest-yield next functions:
+Earlier reading extracted pubkey at `[17:49]`, which silently swallowed the
+`03 fe ff 03` trailer into the pubkey. Real Curve25519 pubkeys do not end
+in that magic.
 
-- `sub_4f7c4`
-- the init/producer path for `gateway + 0x44`
-- the serializer for the object built by `sub_48832`
-- the `sub_49202 -> sub_487cc -> sub_9f75e` emission chain
+### `0x62` ChallengeRsp (41 bytes)
 
-Those should answer how the real firmware generates the 7-byte stateful prefix
-and the rest of the first `0x62` payload.
+Built by `sub_52090` via the same `sub_444b8` path as ConnRsp but with
+`sub_439f0(obj, 3)` instead of `1`, so `inner_type = 3`:
+
+```
+[0:2]   01 03
+[2:34]  <32-byte gateway pubkey> (same keypair as ConnRsp)
+[34:37] 0a 00 02
+[37:41] 03 fe ff 03
+```
+
+## Session Key KDF (sub_3af5a)
+
+After `crypto_scalarmult(shared, local_priv, remote_pub)`, the firmware does:
+
+```c
+r6 = &remote_pubkey   // keypair + 8
+r8 = &local_pubkey    // keypair + 0x14
+if (keypair+4 == 0)   // NOT initiator (the gateway case)
+    swap(r6, r8)
+blake2b_update(shared)
+blake2b_update(*r6)   // after swap: local (gateway_pub)
+blake2b_update(*r8)   // after swap: remote (sensor_pub)
+```
+
+So **both sides** hash `shared || gateway_pub || sensor_pub`. The prior
+emulator hashed `shared || sensor_pub || gateway_pub`, producing a key the
+real sensor would never agree with — a silent interop bug masked by
+self-consistent unit tests.
+
+## Emulator Changes Landed
+
+- `tools/sx1302/superlink/gateway.py`
+  - 0x40 branch: emit `01 01 | pubkey | 0a 00 02 | 03 fe ff 03`.
+  - 0x42 branch: extract `remote_pubkey` from `[13:45]`, validate trailer.
+  - ChallengeRsp: emit same layout with `01 03` prefix.
+  - KDF call fixed to `derive_session_key(shared, gw_pub, sensor_pub)`.
+- `tools/sx1302/superlink/crypto.py`: docstring corrected to match firmware.
+- `tests/fixtures/captured_frames.py`: `CONN_CHALLENGE_SENSOR_PUBKEY = PAYLOAD[13:45]`
+  (was `[17:49]`).
+- `tests/test_gateway.py`: DH-ordering tests plus crafted-0x42 test updated
+  for the new pubkey offset and KDF order.
+
+All 34 tests pass. End-to-end simulation: gateway and sensor-side code now
+derive an identical session key from a crafted 0x42 using the real wire
+layout; the TX MIC verifies against the same BLAKE2b-4 scheme proven against
+the real captured 0x62.
+
+## Still Open
+
+- The 11-byte mid-header of `0x42` (`01 5d 0b 05 68 21 90 f8 b4 06 2b`) is
+  probably challenge material + ChMap echo; not yet field-mapped.
+- The `0a 00 02` middle of `0x62` is semantically just copied from capture.
+  Plausibly `{random 0..63 from sub_43f2c, optional-present=0, const 2}`.
+- After ACTIVE: sensor sends 0x44 Setup frames with session key; we decrypt
+  but don't yet reply with 0x74.

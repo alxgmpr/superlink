@@ -1,0 +1,73 @@
+17:35:59.043 INFO === DL Capture Mode ===
+17:35:59.044 INFO DL CH13 (922.8 MHz, 500 kHz BW) — paired with UL CH5
+17:35:59.044 INFO UL CH1-8 also active (125 kHz multi-SF on Radio A)
+CoreCell reset done
+Opening SPI communication interface
+Note: chip version is 0x10 (v1.0)
+INFO: using legacy timestamp
+INFO: LoRa Service modem: configuring preamble size to 12 symbols
+ARB: dual demodulation disabled for all SF
+INFO: found temperature sensor on port 0x39
+17:36:02.127 INFO Concentrator started (HAL Version: 2.1.0;)
+17:36:02.127 INFO Listening... Ctrl+C to stop
+
+17:36:28.748 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C0.28 rssi=-29 payload=01ae940000000000
+17:36:33.746 INFO UL CH7  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C1.30 rssi=-29 payload=01ae940100000000
+17:36:38.744 INFO UL CH8  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C2.0F rssi=-28 payload=01ae940200000000
+17:36:43.743 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C3.3A rssi=-29 payload=01ae940300000000
+17:36:48.751 INFO UL CH1  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C4.09 rssi=-27 payload=01ae940400000000
+17:36:53.748 INFO UL CH8  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C5.19 rssi=-27 payload=01ae940500000000
+17:36:58.745 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C6.32 rssi=-25 payload=01ae940600000000
+17:37:03.743 INFO UL CH5  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C7.36 rssi=-25 payload=01ae940700000000 <<<
+17:37:03.743 INFO   ^ This UL channel pairs with our DL CH13 — watch for DL response!
+17:37:08.747 INFO UL CH3  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C8.0B rssi=-25 payload=01ae940800000000
+17:37:13.741 INFO UL CH5  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=C9.3A rssi=-25 payload=01ae940900000000 <<<
+17:37:13.741 INFO   ^ This UL channel pairs with our DL CH13 — watch for DL response!
+17:37:14.749 INFO *** DL CH13 *** dctrl=0x62 (conn-rsp) mac=90:41:B2:2E:9A:53 seq=BB.38 rssi=-7 snr=7.5 size=55
+17:37:14.749 INFO   RAW: e0629041b22e9a53bb38b2a2c70dbe3d104e36ca7d6a6f4e45897e87268bf6c458df8f64fddd00afef962578f4e0b9dad15abfc76ddd97
+17:37:14.749 INFO   MIC: 2976d5ea
+17:37:14.750 INFO   PAYLOAD (41B): c871ff420dbc9a526896773b4566aca2bd50c5b5d32ed0c7847167b1a5b0a160b8062bcb470de0d54c
+
+17:37:15.560 INFO UL CH1  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=CA.2F rssi=-27 size=63
+17:37:15.561 INFO   SENSOR PUBKEY: e72c0d3af0ecc1d484ff50f9b9564489413ab2c9bde6783482d648b103feff03
+17:37:15.561 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:37:17.647 INFO UL CH7  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=CB.25 rssi=-26 payload=01ae944a00000000
+17:37:18.924 INFO UL CH4  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=02.81 rssi=-26 size=92
+17:37:22.554 INFO UL CH5  dctrl=0x54 mac=90:41:B2:2E:9A:53 seq=04.83 rssi=-26 size=80
+17:37:23.551 INFO *** DL CH13 *** dctrl=0x74 (setup-rsp) mac=90:41:B2:2E:9A:53 seq=04.C4 rssi=-7 snr=7.8 size=20
+17:37:23.551 INFO   RAW: e0749041b22e9a5304c4285eb98479364ff108ee
+17:37:23.551 INFO   MIC: 42bc0ecb
+17:37:23.552 INFO   PAYLOAD (6B): 21b3bbe60545
+
+17:37:26.715 INFO UL CH5  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=64.33 rssi=-26 payload=01ae94800000048f <<<
+17:37:26.716 INFO   ^ This UL channel pairs with our DL CH13 — watch for DL response!
+17:37:27.941 INFO UL CH3  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=65.2E rssi=-25 size=16
+17:37:27.941 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:37:29.758 INFO UL CH7  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=66.39 rssi=-26 size=63
+17:37:29.758 INFO   SENSOR PUBKEY: d6ae3ba2982194f66d7d9900cd404bf579a5e15605b0f22bdfb7bedc94be0c49
+17:37:29.758 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:37:30.818 INFO UL CH6  dctrl=0x54 mac=90:41:B2:2E:9A:53 seq=01.12 rssi=-26 size=36
+17:37:31.898 INFO UL CH4  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=02.81 rssi=-26 size=92
+17:37:32.957 INFO UL CH8  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=03.82 rssi=-27 size=41
+17:37:34.037 INFO UL CH5  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=04.83 rssi=-25 size=92
+17:37:35.034 INFO *** DL CH13 *** dctrl=0x74 (setup-rsp) mac=90:41:B2:2E:9A:53 seq=04.76 rssi=-7 snr=7.8 size=20
+17:37:35.034 INFO   RAW: e0749041b22e9a5304768230018537d64191ca37
+17:37:35.034 INFO   MIC: 30818094
+17:37:35.034 INFO   PAYLOAD (6B): 5e02eb340cb7
+
+17:37:35.088 INFO UL CH8  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=05.84 rssi=-26 size=41
+17:37:36.147 INFO UL CH2  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=06.85 rssi=-28 size=41
+17:37:37.196 INFO UL CH8  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=07.86 rssi=-30 size=20
+17:37:38.245 INFO UL CH5  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=08.87 rssi=-28 size=20
+17:37:39.242 INFO *** DL CH13 *** dctrl=0x74 (setup-rsp) mac=90:41:B2:2E:9A:53 seq=08.25 rssi=-7 snr=7.8 size=19
+17:37:39.242 INFO   RAW: e0749041b22e9a5308250560059142afd602cd
+17:37:39.243 INFO   MIC: ec26668b
+17:37:39.243 INFO   PAYLOAD (5B): 5508d466c7
+
+17:37:39.286 INFO UL CH1  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=09.88 rssi=-26 size=19
+17:37:56.704 INFO UL CH7  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=67.10 rssi=-28 payload=01ae94c10000048f
+17:38:26.713 INFO UL CH5  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=68.15 rssi=-26 payload=01ae94c20000048f <<<
+17:38:26.713 INFO   ^ This UL channel pairs with our DL CH13 — watch for DL response!

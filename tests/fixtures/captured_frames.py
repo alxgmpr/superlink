@@ -90,8 +90,14 @@ CONN_CHALLENGE_PAYLOAD = bytes.fromhex(
     "0102015d0b05682190f8b4062b47c72fa57f36ecc60aaccccd6776be392d8f6b"
     "d509797cc1c1bacfbca4df836f03feff03"
 )
-# Pubkey is at payload[17:49]
-CONN_CHALLENGE_SENSOR_PUBKEY = CONN_CHALLENGE_PAYLOAD[17:49]
+# 0x42 plaintext layout (49 bytes):
+#   [0:2]   = 01 02           outer type, inner_type=Challenge
+#   [2:13]  = 11-byte challenge/state header
+#   [13:45] = 32-byte sensor pubkey
+#   [45:49] = 03 fe ff 03     fixed ChMap trailer (matches 0x62 trailer)
+# Earlier revisions used [17:49] — that swallowed the trailer into the pubkey.
+CONN_CHALLENGE_SENSOR_PUBKEY = CONN_CHALLENGE_PAYLOAD[13:45]
+CONN_CHALLENGE_TRAILER = bytes.fromhex("03feff03")
 
 # Gateway DL ACK captured (0x63, 16B, session key)
 PAIRING_DL_ACK_RAW = bytes.fromhex("e0639041b22e9a5302828a24b9bc4c9d")

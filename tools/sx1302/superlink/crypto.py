@@ -42,13 +42,21 @@ def derive_session_key(shared_secret: bytes, pubkey_first: bytes,
                        pubkey_second: bytes, context: bytes = b"") -> bytes:
     """Derive a 32-byte session key via BLAKE2b KDF.
 
-    Matches the decompiled FUN_0003af5a from lorabrd:
-      BLAKE2b(shared_secret || pubkey_first || pubkey_second || context)
+    Matches decompiled sub_3af5a in lorabrd. The firmware uses a common
+    keypair object (keypair + 0x54) for both sides. Inside sub_3af5a:
 
-    The pubkey order depends on who initiated the connection:
-      - Gateway (initiator=False): first=remote(sensor), second=local(gateway)
-      - Sensor (initiator=True): first=local(sensor), second=remote(gateway)
-    In both cases, the sensor's pubkey comes first and the gateway's second.
+        r6 = &remote_pubkey_vec   (keypair + 8)
+        r8 = &local_pubkey_vec    (keypair + 0x14)
+        if (keypair+4 == 0)       // NOT initiator (gateway)
+            swap(r6, r8)
+        blake2b(shared || *r6 || *r8 || ctx_vec || arg3_vec)
+
+    After the swap, BOTH sides hash in the order:
+        shared_secret || gateway_pubkey || sensor_pubkey
+
+    Gateway (is_initiator=0): pass first=gateway_pub, second=sensor_pub.
+    Sensor  (is_initiator=1): pass first=gateway_pub, second=sensor_pub.
+    i.e. the gateway pubkey always comes first regardless of role.
 
     Args:
         shared_secret: 32-byte Curve25519 shared secret.

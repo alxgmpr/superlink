@@ -121,16 +121,24 @@ class GatewaySession:
         if self.session_key is None:
             return None
         if frame.dctrl not in (0x54, 0x44, 0x40):
+            log.info("RX dctrl=0x%02X seq=%02X.%02X (ignored in ACTIVE)",
+                     frame.dctrl, frame.seq_hi, frame.seq_lo)
             return None
 
-        key = self.session_key
+        # 0x40 discovery always uses pairing key + counter=0 (sensor never
+        # increments the stream-counter for discoveries). Using the session
+        # offset here would produce garbage.
         if frame.dctrl == 0x40:
-            key = self.pairing_key
-
-        frame = decrypt_frame(frame, key, ul_counter_offset=self._ul_counter_offset)
-        log.info("RX %s seq=%02X.%02X %s",
-                 format_mac(frame.mac), frame.seq_hi, frame.seq_lo,
-                 frame.interpretation or (frame.payload.hex() if frame.payload else "?"))
+            frame = decrypt_frame(frame, self.pairing_key,
+                                  ul_counter_offset=frame.seq_hi)
+        else:
+            frame = decrypt_frame(frame, self.session_key,
+                                  ul_counter_offset=self._ul_counter_offset)
+        log.info("RX dctrl=0x%02X %s seq=%02X.%02X %s",
+                 frame.dctrl, format_mac(frame.mac),
+                 frame.seq_hi, frame.seq_lo,
+                 frame.interpretation or
+                 (frame.payload.hex() if frame.payload else "?"))
         return frame
 
     def _handle_beaconing(self, frame: SuperLinkFrame, ul_channel: int = 0
@@ -162,17 +170,14 @@ class GatewaySession:
                     dl_freq = DL_FREQ_HZ[ul_channel - 1]
                     self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
 
-                    # ConnectionRsp payload format (41 bytes, from captured frame):
-                    #   [0:2]  = 01 01 (connection type, inner type)
-                    #   [2:9]  = 7-byte inner header (copied from capture)
-                    #   [9:41] = 32-byte Curve25519 DH public key
-                    # The 7-byte inner header was captured from the real gateway.
-                    # TODO: RE the exact meaning of these 7 header bytes.
-                    captured_inner_hdr = bytes.fromhex('74ad9482f05344')
+                    # 0x62 ConnRsp plaintext payload (41 bytes), per the
+                    # captured real-gateway frame. Marker `03 fe ff 03`
+                    # lives at [37:41] (end of payload for ConnRsp).
                     inner_payload = (
                         b'\x01\x01'
-                        + captured_inner_hdr
                         + self._pubkey
+                        + b'\x0a\x00\x02'
+                        + b'\x03\xfe\xff\x03'
                     )
 
                     header = bytes([0xE0, 0x62]) + frame.mac + bytes([
@@ -200,29 +205,57 @@ class GatewaySession:
                             len(frame.payload) if frame.payload else 0)
                 return frame, None, 0
 
-            # Extract pubkey from payload offset 17 (32 bytes)
-            self._remote_pubkey = frame.payload[17:49]
+            # 0x42 ConnectionChallenge plaintext layout. Real pairing
+            # capture (2026-04-20) shows the challenge can be 49 OR 63 bytes.
+            # `03 fe ff 03` is a FIXED-POSITION MARKER at [45:49], NOT a
+            # trailer — the 63B variant has 14 more bytes after it.
+            #   [0:2]   = 01 02                 outer type, inner_type=Challenge
+            #   [2:13]  = 11-byte state header
+            #   [13:45] = 32-byte sensor pubkey
+            #   [45:49] = 03 fe ff 03           fixed marker
+            #   [49:N]  = optional tail (0 bytes for 49B frame,
+            #                            14 bytes for 63B frame)
+            if frame.payload[45:49] != b'\x03\xfe\xff\x03':
+                log.warning("0x42 marker mismatch at [45:49]: %s",
+                            frame.payload[45:49].hex())
+            self._remote_pubkey = frame.payload[13:45]
             self.sensor_mac = frame.mac
             log.info("CONN_CHALLENGE from %s pubkey=%s",
                      format_mac(frame.mac), self._remote_pubkey.hex())
 
-            # Compute DH shared secret and derive session key
+            # Compute DH shared secret and derive session key.
+            # Firmware sub_3af5a hashes in the order: shared || r6 || r8 where
+            # r6 starts as remote pubkey and r8 starts as local pubkey, then
+            # they get SWAPPED when is_initiator==0 (the gateway case). So
+            # after the swap the hash order is: shared || local || remote
+            # = shared || gateway_pub || sensor_pub. For the sensor (initiator)
+            # no swap occurs, r6=remote=gateway_pub r8=local=sensor_pub, same
+            # hash order — ensuring both sides derive the same key.
             shared = compute_shared_secret(self._privkey, self._remote_pubkey)
-            # Gateway is NOT initiator: order is (remote=sensor, local=gateway)
-            self.session_key = derive_session_key(shared, self._remote_pubkey, self._pubkey)
+            self.session_key = derive_session_key(shared, self._pubkey, self._remote_pubkey)
             self._ul_counter_offset = frame.seq_hi
             self.state = State.ACTIVE
             log.info("Session key derived, entering ACTIVE state (counter_offset=%d)",
                      self._ul_counter_offset)
 
-            # Send 0x62 ChallengeRsp on paired DL channel
+            # Send 0x62 ChallengeRsp on paired DL channel.
+            # Firmware sub_52090 builds this via the same sub_444b8 path but
+            # calls sub_439f0(obj, 3) instead of 1 — so inner_type=3.
+            # Payload layout mirrors 0x62 ConnRsp:
+            #   [0:2]   = 01 03           (outer type, inner_type=ChallengeRsp)
+            #   [2:34]  = 32-byte gateway pubkey (SAME keypair as ConnRsp)
+            #   [34:37] = 0a 00 02
+            #   [37:41] = 03 fe ff 03     (ChMap trailer)
             if 1 <= ul_channel <= 8:
                 dl_freq = DL_FREQ_HZ[ul_channel - 1]
                 self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
 
-                # ChallengeRsp: inner type 2, minimal payload
-                # dctrl=0x62 (connection handler, same as ConnRsp)
-                challenge_rsp = bytes([0x01, 0x02])  # type=conn, inner=ChallengeRsp
+                challenge_rsp = (
+                    b'\x01\x03'
+                    + self._pubkey
+                    + b'\x0a\x00\x02'
+                    + b'\x03\xfe\xff\x03'
+                )
                 header = bytes([0xE0, 0x62]) + frame.mac + bytes([
                     self._tx_seq_hi, self._tx_seq_lo])
                 mic = compute_mic(header, challenge_rsp)
@@ -263,8 +296,10 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Print raw hex and crypto details",
     )
     parser.add_argument(
-        "--tx-delay", type=int, default=0, metavar="US",
-        help="TX delay in microseconds after RX (0=immediate, try 1000000 for 1s)",
+        "--tx-delay", type=int, default=1_000_000, metavar="US",
+        help="TX delay in microseconds after RX timestamp (default 1000000=1s, "
+             "matches real Ubi gateway measured at 1.008s sensor UL→GW DL). "
+             "Sensor's post-discovery RX window opens ~1s after its TX end.",
     )
     parser.add_argument(
         "--invert-iq", action="store_true",

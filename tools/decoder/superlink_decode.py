@@ -10,6 +10,7 @@ Usage:
 """
 
 import argparse
+import glob
 import re
 import sys
 import time
@@ -17,6 +18,31 @@ from datetime import datetime
 
 import serial
 import pysodium
+
+
+def autodetect_port() -> str | None:
+    """Pick the Heltec sniffer port by probing with the 's' status command.
+
+    The sniffer firmware responds to 's' with a line containing '[STATUS]'.
+    Probe every plausible /dev/cu.usb* device until one identifies itself.
+    Returns None if nothing responds.
+    """
+    candidates = sorted(
+        glob.glob("/dev/cu.usbserial*") + glob.glob("/dev/cu.usbmodem*")
+    )
+    for port in candidates:
+        try:
+            with serial.Serial(port, 115200, timeout=0.3) as s:
+                time.sleep(0.1)
+                s.reset_input_buffer()
+                s.write(b"s")
+                time.sleep(0.4)
+                data = s.read(1024)
+                if b"[STATUS]" in data:
+                    return port
+        except (serial.SerialException, OSError):
+            continue
+    return None
 
 # Session key (ephemeral — capture via LD_PRELOAD hook on gateway, see docs/)
 # Pass your current key with --key, or set it here:
@@ -172,8 +198,8 @@ def decode_and_print(pkt_info, raw_bytes, key):
 
 def main():
     parser = argparse.ArgumentParser(description="SuperLink real-time packet decoder")
-    parser.add_argument("--port", default="/dev/cu.usbserial-0001",
-                        help="Serial port for Heltec sniffer")
+    parser.add_argument("--port", default=None,
+                        help="Serial port for Heltec sniffer (auto-detects if omitted)")
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--key", type=str, default=None,
                         help="Session key (64 hex chars). Default: last captured key")
@@ -187,15 +213,24 @@ def main():
         bytes.fromhex(args.key) if args.key else DEFAULT_SESSION_KEY
     )
 
+    port = args.port or autodetect_port()
+    if port is None:
+        print(f"{C_RED}No serial port found. Pass --port /dev/cu.usbmodemXXXX.{C_RESET}")
+        available = sorted(glob.glob("/dev/cu.usb*"))
+        if available:
+            print(f"  Available: {', '.join(available)}")
+        sys.exit(1)
+
     print(f"{C_BOLD}SuperLink Decoder v0.1{C_RESET}")
-    print(f"  Port: {args.port}")
+    print(f"  Port: {port}")
     print(f"  Key:  {'disabled' if not key else key.hex()[:16] + '...'}")
     print()
 
     try:
-        ser = serial.Serial(args.port, args.baud, timeout=0.1)
+        ser = serial.Serial(port, args.baud, timeout=0.1)
     except serial.SerialException as e:
-        print(f"{C_RED}Cannot open {args.port}: {e}{C_RESET}")
+        print(f"{C_RED}Cannot open {port}: {e}{C_RESET}")
+        print(f"  (Is something else holding it? `lsof {port}` to check.)")
         sys.exit(1)
 
     # Send initial command

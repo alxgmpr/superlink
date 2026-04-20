@@ -1,0 +1,58 @@
+17:19:26.678 INFO === DL Capture Mode ===
+17:19:26.678 INFO DL CH12 (922.2 MHz, 500 kHz BW) — paired with UL CH4
+17:19:26.678 INFO UL CH1-8 also active (125 kHz multi-SF on Radio A)
+CoreCell reset done
+Opening SPI communication interface
+Note: chip version is 0x10 (v1.0)
+INFO: using legacy timestamp
+INFO: LoRa Service modem: configuring preamble size to 12 symbols
+ARB: dual demodulation disabled for all SF
+INFO: found temperature sensor on port 0x39
+17:19:29.761 INFO Concentrator started (HAL Version: 2.1.0;)
+17:19:29.761 INFO Listening... Ctrl+C to stop
+
+17:21:16.571 INFO UL CH6  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=31.10 rssi=-29 payload=01ae940000000000
+17:21:21.568 INFO UL CH5  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=32.2E rssi=-29 payload=01ae940100000000
+17:21:26.566 INFO UL CH7  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=33.3F rssi=-29 payload=01ae940200000000
+17:21:31.564 INFO UL CH4  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=34.23 rssi=-29 payload=01ae940300000000 <<<
+17:21:31.564 INFO   ^ This UL channel pairs with our DL CH12 — watch for DL response!
+17:21:36.562 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=35.2C rssi=-29 payload=01ae940400000000
+17:21:38.388 INFO UL CH8  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=36.35 rssi=-30 size=63
+17:21:38.389 INFO   SENSOR PUBKEY: 9533612ac63e06dfc65380c9f7f17d73424572b47155f4537dd7d89c03feff03
+17:21:38.389 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:21:40.475 INFO UL CH8  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=37.00 rssi=-30 payload=01ae944500000000
+17:21:41.742 INFO UL CH4  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=02.81 rssi=-29 size=92
+17:21:42.749 INFO *** DL CH12 *** dctrl=0x74 (setup-rsp) mac=90:41:B2:2E:9A:53 seq=02.42 rssi=-7 snr=6.8 size=20
+17:21:42.750 INFO   RAW: e0749041b22e9a530242c222111eb0271e573f83
+17:21:42.750 INFO   MIC: e376a21d
+17:21:42.750 INFO   PAYLOAD (6B): ff8d1ebde87a
+
+17:21:45.365 INFO UL CH1  dctrl=0x54 mac=90:41:B2:2E:9A:53 seq=04.83 rssi=-30 size=80
+17:21:49.534 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=40.2B rssi=-29 payload=01ae94800000048f
+17:21:50.759 INFO UL CH6  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=41.1A rssi=-28 size=16
+17:21:50.760 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:21:52.586 INFO UL CH4  0x42 CONN_CHALLENGE mac=90:41:B2:2E:9A:53 seq=42.08 rssi=-30 size=63
+17:21:52.586 INFO   SENSOR PUBKEY: 65a6adb0f93f5105495170a46c4fba388869265806c2c4ff177e755d207a8314
+17:21:52.586 INFO   Sensor accepted a 0x62! Pairing advancing.
+
+17:21:53.594 INFO *** DL CH12 *** dctrl=0x62 (conn-rsp) mac=90:41:B2:2E:9A:53 seq=22.52 rssi=-10 snr=7.2 size=32
+17:21:53.594 INFO   RAW: e0629041b22e9a532252ce6a103f7d7827ff14b1f31227f1fb8e623bf0d3b6bd
+17:21:53.595 INFO   MIC: b410613b
+17:21:53.595 INFO   PAYLOAD (18B): 537f811f7a829f73dd947315e7463b77ddc1
+
+17:21:53.638 INFO UL CH2  dctrl=0x54 mac=90:41:B2:2E:9A:53 seq=01.14 rssi=-30 size=36
+17:21:54.718 INFO UL CH6  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=02.81 rssi=-33 size=92
+17:21:55.777 INFO UL CH3  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=03.82 rssi=-33 size=41
+17:21:56.857 INFO UL CH7  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=04.83 rssi=-34 size=92
+17:21:57.916 INFO UL CH3  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=05.84 rssi=-32 size=41
+17:21:58.964 INFO UL CH1  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=06.85 rssi=-33 size=20
+17:22:00.012 INFO UL CH2  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=07.86 rssi=-32 size=20
+17:22:01.050 INFO UL CH4  dctrl=0x44 mac=90:41:B2:2E:9A:53 seq=08.87 rssi=-31 size=19
+17:22:19.529 INFO UL CH3  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=43.17 rssi=-29 payload=01ae94c10000048f
+17:22:49.532 INFO UL CH3  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=44.11 rssi=-29 payload=01ae94c20000048f
+17:23:19.534 INFO UL CH4  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=45.01 rssi=-28 payload=01ae94c30000048f <<<
+17:23:19.535 INFO   ^ This UL channel pairs with our DL CH12 — watch for DL response!
+17:23:49.530 INFO UL CH6  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=46.24 rssi=-28 payload=01ae94c40000048f
+17:24:19.529 INFO UL CH2  0x40 DISCOVERY mac=90:41:B2:2E:9A:53 seq=47.1D rssi=-31 payload=01ae94c50000048f

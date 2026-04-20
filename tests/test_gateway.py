@@ -122,11 +122,10 @@ def test_dh_full_exchange():
     sensor_shared = compute_shared_secret(sensor_priv, gw_pub)
     assert gw_shared == sensor_shared
 
-    # Gateway derives session key (is_initiator=False: first=remote, second=local)
-    gw_session_key = derive_session_key(gw_shared, sensor_pub, gw_pub)
-
-    # Sensor derives session key (is_initiator=True: first=local, second=remote)
-    sensor_session_key = derive_session_key(sensor_shared, sensor_pub, gw_pub)
+    # Both sides hash in the order shared || gateway_pub || sensor_pub
+    # (firmware sub_3af5a swaps r6/r8 on the gateway side so both match).
+    gw_session_key = derive_session_key(gw_shared, gw_pub, sensor_pub)
+    sensor_session_key = derive_session_key(sensor_shared, gw_pub, sensor_pub)
 
     # Both must derive the same key
     assert gw_session_key == sensor_session_key
@@ -144,7 +143,7 @@ def test_sensor_frame_decrypted_by_gateway():
     gw_priv, gw_pub = generate_keypair()
     sensor_priv, sensor_pub = generate_keypair()
     shared = compute_shared_secret(gw_priv, sensor_pub)
-    session_key = derive_session_key(shared, sensor_pub, gw_pub)
+    session_key = derive_session_key(shared, gw_pub, sensor_pub)
 
     # Sensor builds a UL data frame
     sensor_mac = SENSOR_MAC
@@ -173,6 +172,8 @@ def test_sensor_frame_decrypted_by_gateway():
 def test_handle_discovery_in_beaconing():
     """In BEACONING state, 0x40 frames should be decrypted and sensor MAC recorded."""
     from tests.fixtures.captured_frames import DISCOVERY_FRAME_RAW
+    from superlink.decoder import build_nonce
+    import pysodium
 
     gw_mac = bytes.fromhex("AABBCCDDEEFF")
     session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
@@ -188,10 +189,28 @@ def test_handle_discovery_in_beaconing():
     # Should produce a 0x62 ConnectionRsp on the paired DL channel
     assert tx_data is not None
     assert tx_freq == DL_CHANNELS_HZ[2]  # CH3 → CH11 = 921.6 MHz
-    # Verify dctrl=0x62 (DL conn-rsp) and frame contains gateway DH pubkey
+    # Verify dctrl=0x62 (DL conn-rsp) and frame is the correct 55-byte size
     assert tx_data[1] == 0x62
     assert len(tx_data) == 10 + 4 + 41  # header + MIC + ConnectionRsp payload
     assert session._pubkey is not None
+
+    # Decrypt the TX frame and verify the layout matches the real gateway:
+    #   [0:2]   = 01 01
+    #   [2:34]  = 32-byte gateway pubkey
+    #   [34:37] = 0a 00 02
+    #   [37:41] = 03 fe ff 03
+    header = tx_data[:10]
+    encrypted = tx_data[10:]
+    nonce = build_nonce(0xE0, 0x62, SENSOR_MAC,
+                        tx_data[8], tx_data[9], counter=0)
+    plaintext = pysodium.crypto_stream_xor(
+        encrypted, len(encrypted), nonce, DEFAULT_PAIRING_KEY)
+    payload = plaintext[4:]
+    assert len(payload) == 41
+    assert payload[0:2] == b"\x01\x01"
+    assert payload[2:34] == session._pubkey
+    assert payload[34:37] == b"\x0a\x00\x02"
+    assert payload[37:41] == b"\x03\xfe\xff\x03"
 
 
 def test_handle_connection_challenge():
@@ -224,14 +243,15 @@ def test_connection_challenge_derives_correct_key():
     session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
     session.start()
 
-    # Manually craft a ConnectionChallenge with a known sensor keypair
+    # Manually craft a ConnectionChallenge with a known sensor keypair.
+    # Layout: [13B header] + [32B pubkey] + [4B trailer 03 fe ff 03] = 49B
     sensor_priv, sensor_pub = generate_keypair()
 
-    # Build the 0x42 payload: [17 header bytes] + [32 byte pubkey]
     header_bytes = bytes([0x01, 0x02, 0x01, 0x5D, 0x0B, 0x05,
-                          0x68, 0x21, 0x90, 0xF8, 0xB4, 0x06,
-                          0x2B, 0x47, 0xC7, 0x2F, 0xA5])
-    challenge_payload = header_bytes + sensor_pub
+                          0x68, 0x21, 0x90, 0xF8, 0xB4, 0x06, 0x2B])
+    trailer = bytes([0x03, 0xFE, 0xFF, 0x03])
+    challenge_payload = header_bytes + sensor_pub + trailer
+    assert len(challenge_payload) == 49
     mic = b"\x00" * 4
 
     raw = build_frame(0xE0, 0x42, SENSOR_MAC, 0x10, 0x55,
@@ -241,11 +261,9 @@ def test_connection_challenge_derives_correct_key():
     assert session.state == State.ACTIVE
     assert session.session_key is not None
 
-    # Now compute what the sensor would derive as session key
+    # Sensor derives: blake2b(shared || gateway_pub || sensor_pub)
     sensor_shared = compute_shared_secret(sensor_priv, session._pubkey)
-    # Sensor is initiator: first=local(sensor), second=remote(gateway)
-    # Both sides produce (sensor_pub, gw_pub) order
-    sensor_key = derive_session_key(sensor_shared, sensor_pub, session._pubkey)
+    sensor_key = derive_session_key(sensor_shared, session._pubkey, sensor_pub)
 
     assert session.session_key == sensor_key
 
