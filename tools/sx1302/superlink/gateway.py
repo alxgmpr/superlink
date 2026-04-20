@@ -373,3 +373,7 @@ def main():
             hal.stop()
         if csv_file:
             csv_file.close()
+
+
+if __name__ == "__main__":
+    main()
