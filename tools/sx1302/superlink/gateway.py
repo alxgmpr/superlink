@@ -9,6 +9,7 @@ import argparse
 import csv
 import enum
 import logging
+import struct
 import sys
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,12 @@ from .decoder import (
     build_frame, build_nonce, compute_mic, decrypt_frame, encrypt_payload,
     format_mac, parse_frame, SuperLinkFrame, DCTRL_TABLE,
 )
+
+try:
+    import pysodium
+    _HAS_CRYPTO = True
+except ImportError:
+    _HAS_CRYPTO = False
 
 log = logging.getLogger(__name__)
 
@@ -36,10 +43,15 @@ class GatewaySession:
     """Manages a single sensor connection lifecycle."""
 
     def __init__(self, gw_mac: bytes, pairing_key: bytes,
-                 beacon_interval: float = 240.0):
+                 beacon_interval: float = 240.0,
+                 kdf_context: bytes | None = None):
         self.gw_mac = gw_mac
         self.pairing_key = pairing_key
         self.beacon_interval = beacon_interval
+        # keypair+0x30 context fed into the session-key KDF. Defaults to the
+        # pairing_key; can be overridden to try values captured from a real
+        # bridge (e.g. via tools/keyhook).
+        self._kdf_context = kdf_context if kdf_context is not None else pairing_key
 
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
@@ -120,17 +132,27 @@ class GatewaySession:
             return None
         if self.session_key is None:
             return None
-        if frame.dctrl not in (0x54, 0x44, 0x40):
+        if frame.dctrl not in (0x54, 0x44, 0x40, 0x53, 0x43):
             log.info("RX dctrl=0x%02X seq=%02X.%02X (ignored in ACTIVE)",
                      frame.dctrl, frame.seq_hi, frame.seq_lo)
             return None
 
-        # 0x40 discovery always uses pairing key + counter=0 (sensor never
-        # increments the stream-counter for discoveries). Using the session
-        # offset here would produce garbage.
+        # 0x40 discovery: pairing_key + counter=0.
+        # 0x53 / 0x43 post-pairing management: session_key + counter=0 (same
+        #   zero-counter pattern as 0x40, confirmed from real-bridge capture
+        #   NONCE=e053<mac><seq>00000000... with key=session_key).
+        # 0x54 / 0x44 data: session_key + counter = seq_hi - ul_counter_offset.
         if frame.dctrl == 0x40:
             frame = decrypt_frame(frame, self.pairing_key,
                                   ul_counter_offset=frame.seq_hi)
+        elif frame.dctrl in (0x53, 0x43):
+            # dl_counter=0 forces counter=0 regardless of the DCTRL_TABLE
+            # direction label (decoder currently marks 0x43/0x53 as DL;
+            # empirically we receive them UL from the sensor, and the
+            # real bridge capture shows counter=0 for both).
+            frame = decrypt_frame(frame, self.session_key,
+                                  ul_counter_offset=frame.seq_hi,
+                                  dl_counter=0)
         else:
             frame = decrypt_frame(frame, self.session_key,
                                   ul_counter_offset=self._ul_counter_offset)
@@ -205,57 +227,85 @@ class GatewaySession:
                             len(frame.payload) if frame.payload else 0)
                 return frame, None, 0
 
-            # 0x42 ConnectionChallenge plaintext layout. Real pairing
-            # capture (2026-04-20) shows the challenge can be 49 OR 63 bytes.
-            # `03 fe ff 03` is a FIXED-POSITION MARKER at [45:49], NOT a
-            # trailer — the 63B variant has 14 more bytes after it.
-            #   [0:2]   = 01 02                 outer type, inner_type=Challenge
-            #   [2:13]  = 11-byte state header
-            #   [13:45] = 32-byte sensor pubkey
+            # 0x42 ConnectionChallenge plaintext layout, corrected per the
+            # 2026-04-21 LD_PRELOAD keyhook capture of a real Ubi bridge:
+            #   [0:2]   = 01 02                 outer stamp
+            #   [2:3]   = 01                    type byte
+            #   [3:35]  = 32B sensor pubkey
+            #   [35:45] = 10B ENCRYPTED with session_key + zero nonce,
+            #             decrypts to: sensor_mac (6B) || u32 (4B)
             #   [45:49] = 03 fe ff 03           fixed marker
-            #   [49:N]  = optional tail (0 bytes for 49B frame,
-            #                            14 bytes for 63B frame)
+            #   [49:N]  = optional tail
+            #
+            # Earlier RE mis-interpreted [35:41] and [41:45] as plaintext
+            # "state vec" and "state u32" — they are actually ciphertext of a
+            # 10-byte session-key-encrypted blob.
             if frame.payload[45:49] != b'\x03\xfe\xff\x03':
                 log.warning("0x42 marker mismatch at [45:49]: %s",
                             frame.payload[45:49].hex())
-            self._remote_pubkey = frame.payload[13:45]
+            self._remote_pubkey = frame.payload[3:35]
             self.sensor_mac = frame.mac
             log.info("CONN_CHALLENGE from %s pubkey=%s",
                      format_mac(frame.mac), self._remote_pubkey.hex())
 
             # Compute DH shared secret and derive session key.
-            # Firmware sub_3af5a hashes in the order: shared || r6 || r8 where
-            # r6 starts as remote pubkey and r8 starts as local pubkey, then
-            # they get SWAPPED when is_initiator==0 (the gateway case). So
-            # after the swap the hash order is: shared || local || remote
-            # = shared || gateway_pub || sensor_pub. For the sensor (initiator)
-            # no swap occurs, r6=remote=gateway_pub r8=local=sensor_pub, same
-            # hash order — ensuring both sides derive the same key.
+            # Firmware sub_3af5a hashes in order (after is_initiator swap):
+            #   shared || gw_pub || sensor_pub || keypair+0x30_context
+            # The keypair+0x30 context is a per-device 32-byte value the bridge
+            # persists. For a factory-default sensor the expected value is
+            # unknown — we try pairing_key first; can be overridden by CLI.
             shared = compute_shared_secret(self._privkey, self._remote_pubkey)
-            self.session_key = derive_session_key(shared, self._pubkey, self._remote_pubkey)
+            self.session_key = derive_session_key(
+                shared, self._pubkey, self._remote_pubkey,
+                context=self._kdf_context,
+            )
             self._ul_counter_offset = frame.seq_hi
             self.state = State.ACTIVE
-            log.info("Session key derived, entering ACTIVE state (counter_offset=%d)",
-                     self._ul_counter_offset)
+            log.info("Session key derived (kdf_ctx=%s...)",
+                     self._kdf_context[:8].hex())
+
+            # Decrypt 0x42 [35:45] with session_key + zero nonce to recover
+            # the 10-byte blob = sensor_mac(6B) + u32(4B). The u32 is a fresh
+            # per-handshake challenge value we must echo in ChallengeRsp.
+            if not _HAS_CRYPTO:
+                raise RuntimeError("pysodium required for ChallengeRsp decrypt")
+            blob_ct = bytes(frame.payload[35:45])
+            blob_pt = pysodium.crypto_stream_xor(
+                blob_ct, len(blob_ct), b'\x00' * 24, self.session_key,
+            )
+            echoed_sensor_mac = blob_pt[:6]
+            challenge_u32 = blob_pt[6:10]
+            log.info("  0x42 inner decrypt: sensor_mac=%s u32=%s",
+                     format_mac(echoed_sensor_mac), challenge_u32.hex())
+            if echoed_sensor_mac != frame.mac:
+                log.warning("  inner sensor_mac %s != frame.mac %s (wrong KDF context?)",
+                            format_mac(echoed_sensor_mac), format_mac(frame.mac))
 
             # Send 0x62 ChallengeRsp on paired DL channel.
-            # Firmware sub_52090 builds this via the same sub_444b8 path but
-            # calls sub_439f0(obj, 3) instead of 1 — so inner_type=3.
-            # Payload layout mirrors 0x62 ConnRsp:
-            #   [0:2]   = 01 03           (outer type, inner_type=ChallengeRsp)
-            #   [2:34]  = 32-byte gateway pubkey (SAME keypair as ConnRsp)
-            #   [34:37] = 0a 00 02
-            #   [37:41] = 03 fe ff 03     (ChMap trailer)
+            #
+            # Inner 16-byte plaintext (per real-bridge capture):
+            #   gw_mac (6B) || sensor_mac (6B) || u32 (4B — echoed from 0x42)
+            # XSalsa20 with session_key + 24-byte zero nonce, stamped with "01 03".
+            # Outer XSalsa20 uses pairing_key.
             if 1 <= ul_channel <= 8:
                 dl_freq = DL_FREQ_HZ[ul_channel - 1]
                 self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
 
-                challenge_rsp = (
-                    b'\x01\x03'
-                    + self._pubkey
-                    + b'\x0a\x00\x02'
-                    + b'\x03\xfe\xff\x03'
+                inner_plaintext = (
+                    self.gw_mac        # vec1 (6B): gateway MAC
+                    + frame.mac        # vec2 (6B): sensor MAC
+                    + challenge_u32    # u32  (4B): echoed from 0x42
                 )
+                assert len(inner_plaintext) == 16, len(inner_plaintext)
+
+                encrypted_inner = pysodium.crypto_stream_xor(
+                    inner_plaintext, len(inner_plaintext),
+                    b'\x00' * 24, self.session_key,
+                )
+
+                challenge_rsp = b'\x01\x03' + encrypted_inner
+                assert len(challenge_rsp) == 18
+
                 header = bytes([0xE0, 0x62]) + frame.mac + bytes([
                     self._tx_seq_hi, self._tx_seq_lo])
                 mic = compute_mic(header, challenge_rsp)
@@ -265,8 +315,11 @@ class GatewaySession:
                     mic, challenge_rsp,
                     self.pairing_key, counter=0,
                 )
-                log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz (%d bytes)",
+                log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz "
+                         "(%d bytes outer, 16B inner encrypted)",
                          format_mac(frame.mac), dl_freq / 1e6, len(tx_frame))
+                log.info("  inner plaintext: %s", inner_plaintext.hex())
+                log.info("  inner encrypted: %s", encrypted_inner.hex())
                 return frame, tx_frame, dl_freq
 
             return frame, None, 0
@@ -305,6 +358,12 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--invert-iq", action="store_true",
         help="Invert IQ polarization for DL TX (LoRaWAN convention)",
     )
+    parser.add_argument(
+        "--kdf-context", metavar="HEX",
+        help="32-byte hex value to use as keypair+0x30 in the session-key KDF "
+             "(default: pairing_key). Captured real-bridge values to try: "
+             "c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db",
+    )
     return parser.parse_args(argv)
 
 
@@ -329,12 +388,21 @@ def main():
 
     from .hal import SX1302, BW_500KHZ
 
+    kdf_context = None
+    if args.kdf_context:
+        kdf_context = bytes.fromhex(args.kdf_context)
+        if len(kdf_context) != 32:
+            print(f"Error: --kdf-context must be 32 bytes (got {len(kdf_context)})",
+                  file=sys.stderr)
+            sys.exit(1)
+
     session = GatewaySession(
         gw_mac=gw_mac,
         pairing_key=bytes.fromhex(
             "47be3dffb41ea35749c9290e6d2124e6b3e3842ab4e443bd0ac41eda045c2dbe"
         ),
         beacon_interval=args.beacon_interval,
+        kdf_context=kdf_context,
     )
 
     # CSV logging

@@ -49,20 +49,29 @@ def derive_session_key(shared_secret: bytes, pubkey_first: bytes,
         r8 = &local_pubkey_vec    (keypair + 0x14)
         if (keypair+4 == 0)       // NOT initiator (gateway)
             swap(r6, r8)
-        blake2b(shared || *r6 || *r8 || ctx_vec || arg3_vec)
+        blake2b(shared || *r6 || *r8 || *(keypair+0x30) || arg3_vec)
 
     After the swap, BOTH sides hash in the order:
-        shared_secret || gateway_pubkey || sensor_pubkey
+        shared_secret || gateway_pubkey || sensor_pubkey || context
 
-    Gateway (is_initiator=0): pass first=gateway_pub, second=sensor_pub.
-    Sensor  (is_initiator=1): pass first=gateway_pub, second=sensor_pub.
-    i.e. the gateway pubkey always comes first regardless of role.
+    The `context` vector at keypair+0x30 is populated by the keypair
+    constructor sub_3b054 from arg4 of sub_54020 (the gateway-session
+    constructor). Tracing back: sub_54020 is invoked by sub_48f28 ←
+    sub_50344 ← sub_5be1c (JSON "add device" handler) with arg4 = the
+    "key" JSON field. For factory pairing, the controller provisions
+    "key" and "fallbackKey" as the same hardcoded Ubi default key
+    (47be3dff…), so keypair+0x30 == pairing_key in that case.
+
+    arg3_vec (the 5th hash component) is an empty std::vector<uint8_t>
+    in the initial-pairing flow (sub_52090 zeros var_c0 before the call),
+    so it contributes zero bytes to the hash.
 
     Args:
         shared_secret: 32-byte Curve25519 shared secret.
-        pubkey_first: First public key (see ordering above).
-        pubkey_second: Second public key.
-        context: Additional context bytes (TBD — needs keyhook capture to confirm).
+        pubkey_first: gateway pubkey (always first after swap).
+        pubkey_second: sensor pubkey.
+        context: keypair+0x30 vector — pass the pairing_key for the
+            factory-pairing flow.
 
     Returns:
         32-byte session key.

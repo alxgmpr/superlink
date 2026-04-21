@@ -261,9 +261,15 @@ def test_connection_challenge_derives_correct_key():
     assert session.state == State.ACTIVE
     assert session.session_key is not None
 
-    # Sensor derives: blake2b(shared || gateway_pub || sensor_pub)
+    # Sensor derives: blake2b(shared || gw_pub || sensor_pub || pairing_key)
+    # The pairing_key context comes from keypair+0x30, populated by the JSON
+    # "add device" handler (sub_5be1c → sub_54020 arg4). For factory pairing
+    # the "key" field == default pairing key.
     sensor_shared = compute_shared_secret(sensor_priv, session._pubkey)
-    sensor_key = derive_session_key(sensor_shared, session._pubkey, sensor_pub)
+    sensor_key = derive_session_key(
+        sensor_shared, session._pubkey, sensor_pub,
+        context=DEFAULT_PAIRING_KEY,
+    )
 
     assert session.session_key == sensor_key
 
