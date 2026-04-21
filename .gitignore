@@ -44,3 +44,15 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+# Cross-arch debug binaries (reproducible via apt on Pi)
+tools/keyhook/gdbserver-armhf
+tools/keyhook/gdb-libs/
+tools/keyhook/bridge-certs.tar.gz
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Bridge certs incl. private keys — do not distribute
+tools/mock_controller/bridge_certs/

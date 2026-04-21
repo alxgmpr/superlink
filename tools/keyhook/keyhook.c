@@ -24,14 +24,14 @@
 
 #define NONCE_LEN 24
 #define KEY_LEN   32
-#define MAX_LOG   4000
+#define MAX_LOG   30000
 
 static int logfd = -1;
 static int log_count = 0;
 
 static const char hx[] = "0123456789abcdef";
 
-static void whex(int fd, const unsigned char *b, unsigned long n) {
+static void whex(int fd, const unsigned char *b, size_t n) {
     char o[2];
     for (unsigned long i = 0; i < n; i++) {
         o[0] = hx[b[i] >> 4];
@@ -228,4 +228,224 @@ int crypto_generichash_final(void *state, unsigned char *out, size_t outlen) {
         wstr(logfd, "\n---\n");
     }
     return rc;
+}
+
+/* --- randombytes_buf hook ---
+ *
+ * Top candidate for where the SwitchClassBRsp 70-byte body's 64 middle bytes
+ * come from. If the firmware calls randombytes_buf(64) somewhere in
+ * sub_52e78's subtree (per RA), those bytes ARE the Class B grant payload —
+ * literal random, not validated semantically. That would mean we can reproduce
+ * the grant with any 64 random bytes in our emulator.
+ *
+ * Avoid dlsym (pulls GLIBC_2.34 on the build host). Instead fulfill the call
+ * by reading /dev/urandom directly — same effect as libsodium's sysrandom
+ * backend. The KEY data point is the RA; the bytes themselves are logged so
+ * we can tie them to the subsequent 70-byte body.
+ */
+
+static void fill_from_urandom(unsigned char *buf, unsigned long size) {
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) { for (unsigned long i = 0; i < size; i++) buf[i] = 0; return; }
+    unsigned long off = 0;
+    while (off < size) {
+        long n = read(fd, buf + off, size - off);
+        if (n <= 0) break;
+        off += (unsigned long)n;
+    }
+    close(fd);
+}
+
+void randombytes_buf(void *buf, unsigned long size) {
+    const void *ra = __builtin_return_address(0);
+    fill_from_urandom((unsigned char *)buf, size);
+    if (bump()) {
+        unsigned long cap = size < 512 ? size : 512;
+        wstr(logfd, "FUNC=randombytes\nRA="); wptr(logfd, ra);
+        wstr(logfd, "\nLEN=");                wdec(logfd, size);
+        wstr(logfd, "\nBUF=");                whex(logfd, (const unsigned char *)buf, cap);
+        wstr(logfd, "\n---\n");
+    }
+}
+
+/* --- memcpy / memmove / memset hooks ---
+ *
+ * Catch structured assembly of the 70-byte SwitchClassBRsp body. The 64B
+ * middle has no crypto call producing it, so it MUST be written via byte
+ * copies or memset init. Hook the three libc primitives and filter by RA
+ * being inside lorabrd text (0x10000–0x80000) — skips the enormous noise
+ * from libstdc++ / glibc internals.
+ *
+ * To avoid recursion, implement each op byte-by-byte internally. Slower
+ * than the real glibc assembly versions, but it's only active for the
+ * pairing window.
+ */
+
+#define FW_TEXT_LO 0x10000u
+#define FW_TEXT_HI 0x80000u
+#define MEM_MAX_LOG_BYTES 2048
+
+static void *real_memcpy(void *dst, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+    while (n--) *d++ = *s++;
+    return dst;
+}
+
+static void *real_memmove(void *dst, const void *src, size_t n) {
+    unsigned char *d = (unsigned char *)dst;
+    const unsigned char *s = (const unsigned char *)src;
+    if (d == s || n == 0) return dst;
+    if ((uintptr_t)d < (uintptr_t)s) {
+        while (n--) *d++ = *s++;
+    } else {
+        d += n; s += n;
+        while (n--) *--d = *--s;
+    }
+    return dst;
+}
+
+static void *real_memset(void *dst, int v, size_t n) {
+    unsigned char *d = (unsigned char *)dst;
+    unsigned char c = (unsigned char)v;
+    while (n--) *d++ = c;
+    return dst;
+}
+
+static int ra_in_fw(const void *ra) {
+    uintptr_t r = (uintptr_t)ra;
+    return r >= FW_TEXT_LO && r < FW_TEXT_HI;
+}
+
+/* Size filter — capture likely field sizes (MAC, key, timing fields, full
+ * body). Skip 1-3 byte writes (noisy and uninformative). */
+static int interesting_size(size_t n) {
+    if (n < 4) return 0;
+    if (n > 256) return 0;
+    return 1;
+}
+
+void *memcpy(void *dst, const void *src, size_t n) {
+    const void *ra = __builtin_return_address(0);
+    void *r = real_memcpy(dst, src, n);
+    if (ra_in_fw(ra) && interesting_size(n) && bump()) {
+        unsigned long cap = n < MEM_MAX_LOG_BYTES ? n : MEM_MAX_LOG_BYTES;
+        wstr(logfd, "FUNC=memcpy\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nDST=");             wptr(logfd, dst);
+        wstr(logfd, "\nSRC=");             wptr(logfd, src);
+        wstr(logfd, "\nLEN=");             wdec(logfd, n);
+        wstr(logfd, "\nDATA=");            whex(logfd, (const unsigned char *)dst, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+void *memmove(void *dst, const void *src, size_t n) {
+    const void *ra = __builtin_return_address(0);
+    void *r = real_memmove(dst, src, n);
+    if (ra_in_fw(ra) && interesting_size(n) && bump()) {
+        unsigned long cap = n < MEM_MAX_LOG_BYTES ? n : MEM_MAX_LOG_BYTES;
+        wstr(logfd, "FUNC=memmove\nRA="); wptr(logfd, ra);
+        wstr(logfd, "\nDST=");             wptr(logfd, dst);
+        wstr(logfd, "\nSRC=");             wptr(logfd, src);
+        wstr(logfd, "\nLEN=");             wdec(logfd, n);
+        wstr(logfd, "\nDATA=");            whex(logfd, (const unsigned char *)dst, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+/* Manual ARM stack walker. Reads SP, scans upward, collects return-address
+ * candidates that fall in the firmware text range. Works where GCC's
+ * __builtin_return_address(N>0) returns NULL (target lacks frame pointers).
+ *
+ * For the memset(DST, 0, 70) case in particular:
+ *   - ra0 (__builtin_return_address(0)) = 0x32679 (in sub_32650)
+ *   - sub_32650 prologue: `push {r4, r5, r6, lr}` → its saved LR is the
+ *     address we want (= caller of sub_32650 + 4)
+ *   - The saved LR sits on the stack at a known offset relative to sub_32650's
+ *     own SP, but by the time we run several frames have pushed/popped
+ *     - so instead of a fixed offset we scan.
+ */
+static void walk_stack(uintptr_t sp, const void *ra0,
+                       const void **slots, int max_slots) {
+    int found = 0;
+    for (int i = 0; i < 64 && found < max_slots; i++) {
+        uintptr_t val = *(volatile uintptr_t *)(sp + (unsigned)i * 4);
+        /* Firmware text range (lorabrd .text ends around 0xef000) */
+        if (val >= FW_TEXT_LO && val < FW_TEXT_HI &&
+            val != (uintptr_t)ra0) {
+            slots[found++] = (const void *)val;
+        }
+    }
+    while (found < max_slots) slots[found++] = 0;
+}
+
+void *memset(void *dst, int v, size_t n) {
+    const void *ra0 = __builtin_return_address(0);
+    uintptr_t sp;
+    asm volatile ("mov %0, sp" : "=r"(sp));
+    void *r = real_memset(dst, v, n);
+    if (ra_in_fw(ra0) && interesting_size(n) && bump()) {
+        const void *frames[4] = {0};
+        walk_stack(sp, ra0, frames, 4);
+        wstr(logfd, "FUNC=memset\nRA=");  wptr(logfd, ra0);
+        wstr(logfd, "\nRA1=");             wptr(logfd, frames[0]);
+        wstr(logfd, "\nRA2=");             wptr(logfd, frames[1]);
+        wstr(logfd, "\nRA3=");             wptr(logfd, frames[2]);
+        wstr(logfd, "\nRA4=");             wptr(logfd, frames[3]);
+        wstr(logfd, "\nDST=");             wptr(logfd, dst);
+        wstr(logfd, "\nVAL=");             wdec(logfd, (unsigned)v & 0xff);
+        wstr(logfd, "\nLEN=");             wdec(logfd, n);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+/* --- WebSocket JSON-RPC capture via send/recv hooks ---
+ *
+ * The bridge talks to the UniFi controller over plain WebSocket at
+ * ws://10.1.1.1:41522 using JSON-RPC envelopes. Hooking send/recv on that
+ * socket reveals the full JSON conversation — including whatever field
+ * carries the 64B Class B grant payload.
+ *
+ * Call sendto/recvfrom (separate libc symbols from send/recv) internally
+ * to avoid hook recursion. No dlsym, no GLIBC_2.34.
+ */
+
+typedef long ssize_t_t;  /* ssize_t — avoid pulling in the real header's typedef */
+
+extern ssize_t_t sendto(int fd, const void *buf, size_t len, int flags,
+                         const void *dst, unsigned int dstlen);
+extern ssize_t_t recvfrom(int fd, void *buf, size_t len, int flags,
+                           void *src, unsigned int *srclen);
+
+#define SOCK_MAX_LOG_BYTES 2048
+
+ssize_t_t send(int fd, const void *buf, size_t len, int flags) {
+    const void *ra = __builtin_return_address(0);
+    ssize_t_t r = sendto(fd, buf, len, flags, 0, 0);
+    if (r > 0 && bump()) {
+        size_t cap = (size_t)r < SOCK_MAX_LOG_BYTES ? (size_t)r : SOCK_MAX_LOG_BYTES;
+        wstr(logfd, "FUNC=send\nFD=");  wdec(logfd, (unsigned)fd);
+        wstr(logfd, "\nRA=");            wptr(logfd, ra);
+        wstr(logfd, "\nLEN=");           wdec(logfd, (unsigned)r);
+        wstr(logfd, "\nDATA=");          whex(logfd, (const unsigned char *)buf, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+ssize_t_t recv(int fd, void *buf, size_t len, int flags) {
+    const void *ra = __builtin_return_address(0);
+    ssize_t_t r = recvfrom(fd, buf, len, flags, 0, 0);
+    if (r > 0 && bump()) {
+        size_t cap = (size_t)r < SOCK_MAX_LOG_BYTES ? (size_t)r : SOCK_MAX_LOG_BYTES;
+        wstr(logfd, "FUNC=recv\nFD=");  wdec(logfd, (unsigned)fd);
+        wstr(logfd, "\nRA=");            wptr(logfd, ra);
+        wstr(logfd, "\nLEN=");           wdec(logfd, (unsigned)r);
+        wstr(logfd, "\nDATA=");          whex(logfd, (const unsigned char *)buf, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
 }

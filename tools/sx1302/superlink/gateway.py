@@ -44,7 +44,8 @@ class GatewaySession:
 
     def __init__(self, gw_mac: bytes, pairing_key: bytes,
                  beacon_interval: float = 240.0,
-                 kdf_context: bytes | None = None):
+                 kdf_context: bytes | None = None,
+                 mgmt_counter_start: int = 0x7c):
         self.gw_mac = gw_mac
         self.pairing_key = pairing_key
         self.beacon_interval = beacon_interval
@@ -52,6 +53,7 @@ class GatewaySession:
         # pairing_key; can be overridden to try values captured from a real
         # bridge (e.g. via tools/keyhook).
         self._kdf_context = kdf_context if kdf_context is not None else pairing_key
+        self.mgmt_counter_start = mgmt_counter_start
 
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
@@ -74,6 +76,8 @@ class GatewaySession:
         """Transition from IDLE to BEACONING."""
         self._privkey, self._pubkey = generate_keypair()
         self.state = State.BEACONING
+        if hasattr(self, "_mgmt_counter"):
+            del self._mgmt_counter
         self._last_beacon_time = 0.0  # force immediate first beacon
         log.info("Gateway started, entering BEACONING state")
 
@@ -163,10 +167,24 @@ class GatewaySession:
                  frame.interpretation or
                  (frame.payload.hex() if frame.payload else "?"))
 
-        # Post-pairing management replies: 0x53 → 0x74 `0958`, 0x44 → 0x74
-        # `0b5911010d14`, 0x43 → 0x74 `025a…048f` (70B session blob from
-        # bridge capture). All encrypted with session_key; counter
-        # increments per DL frame starting at 0.
+        # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74
+        # `0b NN+1 11 01 0d 14`, 0x43 → 0x74 `02 NN+2 <64B> 00 00 04 8f`.
+        # NN is a per-session DL-management counter that increments by 1 on
+        # each reply. Across 3 captured real-bridge pairings we see:
+        #   pair2 (key 8ef9826a): 0x53→58, 0x44→59, 0x43→5a
+        #   pair3 (key 5de2900c): 0x43→6b   (0x53/0x44 not captured)
+        #   pair4 (key a7145992): 0x53→7c, 0x44→7d, 0x43→7e
+        # The initial NN is session-specific (probably derived from session
+        # key / shared secret); the sensor appears to accept any value as
+        # long as consecutive replies increment by 1.  XOR across the three
+        # captures shows ONLY position 0 (0x02) and positions 66-69
+        # (00 00 04 8f) stable; all 64 middle bytes of the 0x43 reply vary
+        # per session. Between the 0x43 RX and 0x74 TX, NO crypto call
+        # fires (no stream_xor, no BLAKE2b, no scalarmult, no randombytes)
+        # — the 64B is assembled from in-memory state, not freshly computed.
+        # We use a stable placeholder for the 64B since there is no known
+        # inner encryption; if sensor rejects, the 64B format needs deeper
+        # RE of sub_52e78 stack layout.
         if frame.dctrl in (0x53, 0x44, 0x43) and 1 <= ul_channel <= 8:
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
@@ -181,25 +199,48 @@ class GatewaySession:
             seq_lo = self._post_pair_tx_seq_lo & 0xFF
             counter = self._post_pair_counter
 
-            # Empirical bodies from bridge capture for the equivalent flow
-            # (session_key = 8ef9826a... which corresponds to context
-            # c5923a86...). These values are likely session-specific; if
-            # the sensor rejects we'll need to RE how the middle bytes are
-            # derived.
+            # Per-session DL-management counter (position 1 of each reply
+            # body). Initialize on first use. The starting value is
+            # configurable via --mgmt-counter-start (default 0x7c matches
+            # pair4 capture); subsequent replies increment by 1.
+            if not hasattr(self, "_mgmt_counter"):
+                self._mgmt_counter = getattr(self, "mgmt_counter_start", 0x7c)
+            mgmt = self._mgmt_counter & 0xFF
+            self._mgmt_counter += 1
+
             if frame.dctrl == 0x53:
-                body = bytes.fromhex("0958")   # reply to 0x53 `0100`
+                body = bytes([0x09, mgmt])
             elif frame.dctrl == 0x44:
-                body = bytes.fromhex("0b5911010d14")   # reply to 0x44 setup
-            else:  # 0x43
-                # 70-byte session blob copied from bridge capture
-                # (session_key=8ef9826a…, seq=03.41, counter=2).
-                # Contents likely session-derived; this is a literal copy
-                # as a first attempt. May need to be reconstructed.
-                body = bytes.fromhex(
-                    "025a69b5f40432f45deb2c4a72698faaeb0e31e69899bb63"
-                    "f3a25693e8d49dbb5575ad5accbc18327558bb5f4bf3b870"
-                    "d3e6d8bf747876e50be8613b806dbb1170210000048f"
+                body = bytes([0x0b, mgmt, 0x11, 0x01, 0x0d, 0x14])
+            else:  # 0x43 — 70-byte Class B grant
+                # Track C (binary search): rotate through different 64B
+                # masks across successive 0x43 retries. Each mask zeros
+                # or alters a subregion of the 64B; if the sensor ACCEPTS
+                # a masked version (LED goes blue, 0x43 retries stop),
+                # the zeroed bytes don't matter. Counter per attempt.
+                self._mask_idx = getattr(self, "_mask_idx", 0)
+                base = bytes.fromhex(
+                    "220e8ea74917fdba472502fa8916aa66"
+                    "96350cf31be1bd676927f641e4918619"
+                    "d48383fa5189929bcb7a460d8375b1b8"
+                    "ac82209e7d99221e9a79f294742d8369"
                 )
+                MASKS = [
+                    ("baseline",       lambda b: b),
+                    ("zero_00_15",     lambda b: bytes(16) + b[16:]),
+                    ("zero_16_31",     lambda b: b[:16] + bytes(16) + b[32:]),
+                    ("zero_32_47",     lambda b: b[:32] + bytes(16) + b[48:]),
+                    ("zero_48_63",     lambda b: b[:48] + bytes(16)),
+                    ("all_zero",       lambda b: bytes(64)),
+                    ("all_0xff",       lambda b: bytes([0xff] * 64)),
+                    ("baseline_again", lambda b: b),
+                ]
+                name, fn = MASKS[self._mask_idx % len(MASKS)]
+                middle_64 = fn(base)
+                log.info("Class B grant mask #%d: %s", self._mask_idx, name)
+                self._mask_idx += 1
+                body = (bytes([0x02, mgmt]) + middle_64
+                        + bytes.fromhex("0000048f"))
 
             header = bytes([0xE0, 0x74]) + frame.mac + bytes([seq_hi, seq_lo])
             mic = compute_mic(header, body)
@@ -417,6 +458,13 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "(default: pairing_key). Captured real-bridge values to try: "
              "c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db",
     )
+    parser.add_argument(
+        "--mgmt-counter-start", type=lambda x: int(x, 0), default=0x7c,
+        metavar="N",
+        help="Initial value for the DL-management sequence counter (position 1 "
+             "of 0x53/0x44/0x43 reply bodies). Default 0x7c matches pair4 "
+             "real-bridge capture. Increments by 1 per reply.",
+    )
     return parser.parse_args(argv)
 
 
@@ -456,6 +504,7 @@ def main():
         ),
         beacon_interval=args.beacon_interval,
         kdf_context=kdf_context,
+        mgmt_counter_start=args.mgmt_counter_start,
     )
 
     # CSV logging
