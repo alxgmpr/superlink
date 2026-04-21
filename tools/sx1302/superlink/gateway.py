@@ -118,7 +118,7 @@ class GatewaySession:
             return None, None, 0
 
         if self.state == State.ACTIVE:
-            return self._handle_active(frame), None, 0
+            return self._handle_active(frame, ul_channel)
         elif self.state == State.BEACONING:
             return self._handle_beaconing(frame, ul_channel)
 
@@ -126,16 +126,17 @@ class GatewaySession:
                   self.state.value, frame.dctrl, format_mac(frame.mac))
         return None, None, 0
 
-    def _handle_active(self, frame: SuperLinkFrame) -> SuperLinkFrame | None:
-        """Handle frames in ACTIVE state — decrypt UL data."""
+    def _handle_active(self, frame: SuperLinkFrame, ul_channel: int = 0
+                       ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
+        """Handle frames in ACTIVE state — decrypt UL, emit any DL response."""
         if self.sensor_mac and frame.mac != self.sensor_mac:
-            return None
+            return None, None, 0
         if self.session_key is None:
-            return None
+            return None, None, 0
         if frame.dctrl not in (0x54, 0x44, 0x40, 0x53, 0x43):
             log.info("RX dctrl=0x%02X seq=%02X.%02X (ignored in ACTIVE)",
                      frame.dctrl, frame.seq_hi, frame.seq_lo)
-            return None
+            return None, None, 0
 
         # 0x40 discovery: pairing_key + counter=0.
         # 0x53 / 0x43 post-pairing management: session_key + counter=0 (same
@@ -161,7 +162,59 @@ class GatewaySession:
                  frame.seq_hi, frame.seq_lo,
                  frame.interpretation or
                  (frame.payload.hex() if frame.payload else "?"))
-        return frame
+
+        # Post-pairing management replies: 0x53 → 0x74 `0958`, 0x44 → 0x74
+        # `0b5911010d14`, 0x43 → 0x74 `025a…048f` (70B session blob from
+        # bridge capture). All encrypted with session_key; counter
+        # increments per DL frame starting at 0.
+        if frame.dctrl in (0x53, 0x44, 0x43) and 1 <= ul_channel <= 8:
+            from .hal import DL_FREQ_HZ
+            dl_freq = DL_FREQ_HZ[ul_channel - 1]
+
+            self._post_pair_tx_seq_hi = getattr(
+                self, "_post_pair_tx_seq_hi", 0) + 1
+            self._post_pair_tx_seq_lo = getattr(
+                self, "_post_pair_tx_seq_lo", 0) + 1
+            self._post_pair_counter = getattr(
+                self, "_post_pair_counter", -1) + 1
+            seq_hi = self._post_pair_tx_seq_hi & 0xFF
+            seq_lo = self._post_pair_tx_seq_lo & 0xFF
+            counter = self._post_pair_counter
+
+            # Empirical bodies from bridge capture for the equivalent flow
+            # (session_key = 8ef9826a... which corresponds to context
+            # c5923a86...). These values are likely session-specific; if
+            # the sensor rejects we'll need to RE how the middle bytes are
+            # derived.
+            if frame.dctrl == 0x53:
+                body = bytes.fromhex("0958")   # reply to 0x53 `0100`
+            elif frame.dctrl == 0x44:
+                body = bytes.fromhex("0b5911010d14")   # reply to 0x44 setup
+            else:  # 0x43
+                # 70-byte session blob copied from bridge capture
+                # (session_key=8ef9826a…, seq=03.41, counter=2).
+                # Contents likely session-derived; this is a literal copy
+                # as a first attempt. May need to be reconstructed.
+                body = bytes.fromhex(
+                    "025a69b5f40432f45deb2c4a72698faaeb0e31e69899bb63"
+                    "f3a25693e8d49dbb5575ad5accbc18327558bb5f4bf3b870"
+                    "d3e6d8bf747876e50be8613b806dbb1170210000048f"
+                )
+
+            header = bytes([0xE0, 0x74]) + frame.mac + bytes([seq_hi, seq_lo])
+            mic = compute_mic(header, body)
+            tx_frame = build_frame(
+                0xE0, 0x74, frame.mac, seq_hi, seq_lo,
+                mic, body,
+                self.session_key, counter=counter,
+            )
+            log.info("TX 0x74 reply to 0x%02X on %.1f MHz "
+                     "(seq=%02X.%02X counter=%d body=%s)",
+                     frame.dctrl, dl_freq / 1e6, seq_hi, seq_lo,
+                     counter, body.hex())
+            return frame, tx_frame, dl_freq
+
+        return frame, None, 0
 
     def _handle_beaconing(self, frame: SuperLinkFrame, ul_channel: int = 0
                           ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
