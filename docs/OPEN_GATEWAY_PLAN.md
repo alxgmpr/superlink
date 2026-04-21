@@ -69,19 +69,25 @@ the sensor's 0x43 message**. Structure:
 
 ```
 02 5a <64 bytes random-looking> 00 00 04 8f
-^^^^^ ^^^^^^^^^^^^^^^^^^^^^^^^^ ^^^^^^^^^^^
-hdr   signature / HMAC / blob   trailer
 ```
 
-We currently hardcode this literally from one real-bridge capture. The
-sensor apparently processes without outright rejecting (it keeps the
-connection alive and answers our subsequent frames) but it does not
-accept us as the authoritative gateway. The 64 middle bytes are almost
-certainly a cryptographic signature or HMAC validating gateway identity.
+**Update (after RA-logging hook capture 2026-04-21):** the 70-byte
+reply is NOT an opaque cryptographic signature. Binary Ninja on
+`sub_52e78` (the function that builds it) shows strings **"Switch to
+[ClassName]"** and **"SwitchClassBRsp"**. This is a **Class A → Class B
+switch grant** — structured beacon/ping-slot timing config in a
+LoRaWAN-style encoding. Our hardcoded copy from a different session
+doesn't carry valid timing for the sensor's intended beacon, so the
+sensor never commits to Class B — which is exactly why the LED stays
+white.
+
+This reframes the blocker from "forge a UBNT signature" (probably
+impossible) to "encode the Class B grant correctly" (tractable via
+firmware RE).
 
 Secondary suspects: the session-varying middle bytes of the shorter
-0x74 replies (`09 58` low byte, `0b 59 11 01 0d 14` second byte) may
-also be signed material.
+0x74 replies (`09 58` low byte, `0b 59 11 01 0d 14` second byte) are
+likely similar structured config (not signed material).
 
 ---
 
@@ -142,31 +148,34 @@ Find where it generates the per-device "key" / "fallbackKey" values it
 provisions to bridges. This reveals whether they're random, derived
 from MAC, or fetched from a UBNT cloud service.
 
-### Phase B — Understand the blob (1–2 days)
+### Phase B — Decode the Class B grant (1–2 days)
 
-**B1. Identify the signing primitive.**
-With A2 / A3 complete, we'll know which crypto function produces the
-64 middle bytes. Candidates:
-- 64 B = ed25519 signature
-- 64 B = HMAC-SHA-512
-- 32 B + 32 B = two concatenated BLAKE2b outputs
-- arbitrary padding + short MAC
+*Revised after 2026-04-21 RA-logging confirmed this is not a crypto
+signature but a structured Class B switch-grant message.*
 
-**B2. Identify the signing key.**
-Also revealed by A2 / A3. Most likely locations:
-- loaded from `/etc/persistent/lorabr.key` (read at bridge boot)
-- derived from session_key + per-device context
-- derived from the "key" JSON field
-- stored in NVRAM / factory region
+**B1. Map `sub_52e78`'s output structure.**
+It's the handler for 0x43 inner type 3 ("SwitchClassBRsp" per strings).
+Trace each field that goes into the 70-byte body via `sub_567bc` →
+`sub_55eb6`. Expected fields based on LoRaWAN Class B conventions:
+- beacon frequency / channel index
+- beacon period (default 128 s in LoRaWAN)
+- ping slot period / offset
+- data rate for Class B downlinks
+- timestamp / beacon-time reference
 
-If the key is on the bridge's filesystem, we capture it once and reuse.
-If it's a UBNT-rooted identity signed during cloud adoption, we have a
-deeper problem (see Phase D).
+**B2. Decompile beacon/timing accessors used by `sub_52e78`:**
+`sub_577a6`, `sub_576fc`, `sub_56d0e`, `sub_577d4` — these pull the
+gateway's current beacon schedule. Understand what state the bridge
+holds that we must also hold.
 
-**B3. Reproduce the blob.**
-With primitive + key + inputs identified, replicate the construction in
-Python. Verify byte-identical output against a captured bridge reply.
-Then wire into `gateway.py`.
+**B3. Build + test a valid Class B grant.**
+Encode a grant pointing at our gateway's beacon (if we implement a
+beacon). Test: sensor should accept the grant, transition to Class B,
+LED goes blue then off, door events start arriving.
+
+If our emulator can't match a real beacon (we don't transmit one yet),
+we may need to fake "beacon pending" until we also implement the beacon
+TX path — check if Class B allows a deferred beacon lock.
 
 ### Phase C — Test full pairing (hours)
 
@@ -253,8 +262,9 @@ After that, stretch goals:
 | Outer encryption | ✅ done for factory default |
 | DH + session-key KDF | ✅ done |
 | ChallengeRsp layout | ✅ done |
-| Post-ACTIVE handshake replies | 🟡 literal-copy; signing blob unverified |
-| Sensor reaches paired state | ❌ blocked on 70B blob |
+| Post-ACTIVE handshake replies | 🟡 literal-copy; structure understood (Class B grant) |
+| Class B grant decoded | ❌ next milestone — see Phase B |
+| Sensor reaches paired state | ❌ blocked on valid Class B grant |
 | Operational data decode | ❌ blocked on paired state |
 | Works on arbitrary factory sensor | ❌ blocked on per-device secret story |
 
