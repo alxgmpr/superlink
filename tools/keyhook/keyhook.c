@@ -106,11 +106,17 @@ static void log_stream(const char *func,
                        const unsigned char *c, const unsigned char *m,
                        unsigned long long mlen,
                        const unsigned char *n, const unsigned char *k,
-                       int phase /* 0=pre, 1=post */) {
+                       int phase /* 0=pre, 1=post */,
+                       const void *caller_ra) {
     if (!bump()) return;
     unsigned long cap = mlen < STREAM_MAX_DATA ? mlen : STREAM_MAX_DATA;
     wstr(logfd, "FUNC=");    wstr(logfd, func);
     wstr(logfd, "\nPHASE="); wstr(logfd, phase ? "post" : "pre");
+    if (phase == 0) {
+        /* Caller return-address, so we can look up the call site in
+         * Binary Ninja. Only logged on PRE to avoid doubling log size. */
+        wstr(logfd, "\nRA=");   wptr(logfd, caller_ra);
+    }
     wstr(logfd, "\nKEY=");   whex(logfd, k, KEY_LEN);
     wstr(logfd, "\nNONCE="); whex(logfd, n, NONCE_LEN);
     wstr(logfd, "\nLEN=");   wdec(logfd, mlen);
@@ -127,18 +133,20 @@ int crypto_stream_xsalsa20_xor(
     unsigned char *c, const unsigned char *m,
     unsigned long long mlen, const unsigned char *n,
     const unsigned char *k) {
-    log_stream("xsalsa20", c, m, mlen, n, k, 0);
+    const void *ra = __builtin_return_address(0);
+    log_stream("xsalsa20", c, m, mlen, n, k, 0, ra);
     int rc = real_xsalsa20_xor(c, m, mlen, n, k);
-    log_stream("xsalsa20", c, m, mlen, n, k, 1);
+    log_stream("xsalsa20", c, m, mlen, n, k, 1, 0);
     return rc;
 }
 
 int crypto_stream_xor(unsigned char *c, const unsigned char *m,
                       unsigned long long mlen, const unsigned char *n,
                       const unsigned char *k) {
-    log_stream("stream", c, m, mlen, n, k, 0);
+    const void *ra = __builtin_return_address(0);
+    log_stream("stream", c, m, mlen, n, k, 0, ra);
     int rc = real_xsalsa20_xor(c, m, mlen, n, k);
-    log_stream("stream", c, m, mlen, n, k, 1);
+    log_stream("stream", c, m, mlen, n, k, 1, 0);
     return rc;
 }
 
@@ -156,12 +164,14 @@ extern int crypto_scalarmult_curve25519(
 
 int crypto_scalarmult(unsigned char *q, const unsigned char *n,
                       const unsigned char *p) {
+    const void *ra = __builtin_return_address(0);
     int rc = crypto_scalarmult_curve25519(q, n, p);
     if (bump()) {
-        wstr(logfd, "FUNC=scalarmult\nPRIV="); whex(logfd, n, 32);
-        wstr(logfd, "\nPUB=");                 whex(logfd, p, 32);
-        wstr(logfd, "\nSHARED=");              whex(logfd, q, 32);
-        wstr(logfd, "\nRC=");                  wdec(logfd, (unsigned)rc);
+        wstr(logfd, "FUNC=scalarmult\nRA="); wptr(logfd, ra);
+        wstr(logfd, "\nPRIV=");              whex(logfd, n, 32);
+        wstr(logfd, "\nPUB=");               whex(logfd, p, 32);
+        wstr(logfd, "\nSHARED=");            whex(logfd, q, 32);
+        wstr(logfd, "\nRC=");                wdec(logfd, (unsigned)rc);
         wstr(logfd, "\n---\n");
     }
     return rc;
@@ -208,9 +218,11 @@ int crypto_generichash_update(void *state, const unsigned char *in,
 }
 
 int crypto_generichash_final(void *state, unsigned char *out, size_t outlen) {
+    const void *ra = __builtin_return_address(0);
     int rc = crypto_generichash_blake2b_final(state, out, outlen);
     if (bump()) {
-        wstr(logfd, "FUNC=gh_final\nSTATE=");  wptr(logfd, state);
+        wstr(logfd, "FUNC=gh_final\nRA=");     wptr(logfd, ra);
+        wstr(logfd, "\nSTATE=");               wptr(logfd, state);
         wstr(logfd, "\nOUTLEN=");              wdec(logfd, outlen);
         wstr(logfd, "\nOUT=");                 whex(logfd, out, outlen);
         wstr(logfd, "\n---\n");
