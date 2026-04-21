@@ -1,5 +1,11 @@
 # SuperLink Reverse Engineering Plan
 
+> **Status note (2026-04-21):** phases 0–3 below are largely complete.
+> The live plan for the remaining work — completing sensor pairing and
+> owning the protocol end-to-end — is in
+> **[OPEN_GATEWAY_PLAN.md](OPEN_GATEWAY_PLAN.md)**. This document is
+> kept as a historical record of the original roadmap.
+
 ## Phase 0: Public Information Gathering (No Devices Needed)
 
 **Goal**: Maximize knowledge from publicly available sources before spending money on hardware.
