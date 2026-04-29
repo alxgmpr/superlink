@@ -56,3 +56,6 @@ __pycache__/
 
 # Bridge certs incl. private keys — do not distribute
 tools/mock_controller/bridge_certs/
+
+# Mock controller local debug log (captures live test output)
+captures/live/mock_controller.jsonl

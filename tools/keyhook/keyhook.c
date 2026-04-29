@@ -189,6 +189,148 @@ int crypto_scalarmult(unsigned char *q, const unsigned char *n,
     return rc;
 }
 
+/* --- memcmp hook (narrow filter) ---
+ *
+ * The authorize handler at lorabrd 0x5fe14 (memcmp@plt callsite) compares
+ * the just-decrypted authorize.secret plaintext against an EXPECTED value
+ * stored in connection state. We need EXPECTED to forge a valid secret.
+ * Hook memcmp, filter by RA = lorabrd text in the authorize-handler range
+ * to keep the log small.
+ */
+
+static int local_memcmp(const void *a, const void *b, size_t n) {
+    const unsigned char *p = a, *q = b;
+    while (n--) {
+        if (*p != *q) return (int)*p - (int)*q;
+        p++; q++;
+    }
+    return 0;
+}
+
+int memcmp(const void *a, const void *b, size_t n) {
+    const void *ra = __builtin_return_address(0);
+    int r = local_memcmp(a, b, n);
+    /* Authorize handler memcmp is at lorabrd 0x5fe18 (Thumb LR after BLX). */
+    uintptr_t rai = (uintptr_t)ra;
+    if (n == 32 && rai >= 0x5fe00 && rai < 0x5fe40 && bump()) {
+        wstr(logfd, "FUNC=memcmp\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nLEN=");             wdec(logfd, n);
+        wstr(logfd, "\nA=");               whex(logfd, (const unsigned char *)a, n);
+        wstr(logfd, "\nB=");               whex(logfd, (const unsigned char *)b, n);
+        wstr(logfd, "\nRC=");              wdec(logfd, (unsigned)r);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+/* --- crypto_secretbox hooks ---
+ *
+ * Hook crypto_secretbox_easy / open_easy so we can recover the (key, nonce,
+ * ciphertext, plaintext) tuple. Used to crack the JSON-RPC `authorize.secret`
+ * format on lorabrd: the bridge runs open_easy on the base64-decoded secret
+ * and memcmp's the plaintext against an expected value. Static RE shows the
+ * call but not the key/nonce composition; this captures all four live during
+ * a real-controller authorize.
+ *
+ * Real symbols available in libsodium for direct dispatch:
+ *   crypto_secretbox_xsalsa20poly1305(_open)
+ * which the public _easy wrappers delegate to. We call these directly so our
+ * own hook isn't re-entered.
+ *
+ * Easy / open_easy layout (per libsodium docs):
+ *   open_easy(out, ciphertext, ctlen, nonce, key)
+ *     ciphertext = MAC(16) || encrypted(N), ctlen = 16+N, plaintext = N bytes
+ *   easy(out, plaintext, ptlen, nonce, key)
+ *     out = MAC(16) || encrypted(ptlen), ptlen = N
+ */
+
+extern int crypto_secretbox_xsalsa20poly1305_open(
+    unsigned char *m, const unsigned char *c, unsigned long long clen,
+    const unsigned char *n, const unsigned char *k);
+extern int crypto_secretbox_xsalsa20poly1305(
+    unsigned char *c, const unsigned char *m, unsigned long long mlen,
+    const unsigned char *n, const unsigned char *k);
+
+#define SBOX_MAX_DATA 512
+
+/* Local byte-copy so we don't depend on KEYHOOK_QUIET-gated real_memcpy. */
+static void sbox_copy(unsigned char *d, const unsigned char *s, size_t n) {
+    while (n--) *d++ = *s++;
+}
+
+int crypto_secretbox_open_easy(
+    unsigned char *out, const unsigned char *ciphertext,
+    unsigned long long ctlen, const unsigned char *nonce,
+    const unsigned char *key) {
+    const void *ra = __builtin_return_address(0);
+    /* Pass through to the real libsodium open_easy via dlsym so we don't
+     * accidentally diverge from its exact memory layout / output write. */
+    static int (*real)(unsigned char *, const unsigned char *,
+                       unsigned long long, const unsigned char *,
+                       const unsigned char *) = 0;
+    if (!real) real = dlsym(RTLD_NEXT, "crypto_secretbox_open_easy");
+    int rc = real(out, ciphertext, ctlen, nonce, key);
+
+    if (bump()) {
+        unsigned long ctcap = ctlen < SBOX_MAX_DATA ? ctlen : SBOX_MAX_DATA;
+        unsigned long ptlen = (rc == 0 && ctlen >= 16) ? (ctlen - 16) : 0;
+        unsigned long ptcap = ptlen < SBOX_MAX_DATA ? ptlen : SBOX_MAX_DATA;
+        wstr(logfd, "FUNC=secretbox_open\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nKEY=");                    whex(logfd, key, KEY_LEN);
+        wstr(logfd, "\nNONCE=");                  whex(logfd, nonce, NONCE_LEN);
+        wstr(logfd, "\nCTLEN=");                  wdec(logfd, (unsigned long long)ctlen);
+        wstr(logfd, "\nCT=");                     whex(logfd, ciphertext, ctcap);
+        wstr(logfd, "\nRC=");                     wdec(logfd, (unsigned)rc);
+        if (rc == 0) {
+            wstr(logfd, "\nPT=");                 whex(logfd, out, ptcap);
+        }
+        wstr(logfd, "\n---\n");
+    }
+    return rc;
+}
+
+int crypto_secretbox_easy(
+    unsigned char *out, const unsigned char *plaintext,
+    unsigned long long ptlen, const unsigned char *nonce,
+    const unsigned char *key) {
+    const void *ra = __builtin_return_address(0);
+    unsigned char tmpm[32 + 4096];
+    unsigned char tmpc[32 + 4096];
+    unsigned long long inflated = ptlen + 32;
+    int rc;
+    if (inflated > sizeof(tmpm)) {
+        static int (*real)(unsigned char *, const unsigned char *,
+                           unsigned long long, const unsigned char *,
+                           const unsigned char *);
+        if (!real) real = dlsym(RTLD_NEXT, "crypto_secretbox_easy");
+        rc = real(out, plaintext, ptlen, nonce, key);
+    } else {
+        for (int i = 0; i < 32; i++) tmpm[i] = 0;
+        sbox_copy(tmpm + 32, plaintext, (size_t)ptlen);
+        rc = crypto_secretbox_xsalsa20poly1305(
+            tmpc, tmpm, inflated, nonce, key);
+        if (rc == 0)
+            sbox_copy(out, tmpc + 16, (size_t)(ptlen + 16));
+    }
+
+    if (bump()) {
+        unsigned long ptcap = ptlen < SBOX_MAX_DATA ? ptlen : SBOX_MAX_DATA;
+        unsigned long long ctlen = ptlen + 16;
+        unsigned long ctcap = ctlen < SBOX_MAX_DATA ? ctlen : SBOX_MAX_DATA;
+        wstr(logfd, "FUNC=secretbox\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nKEY=");               whex(logfd, key, KEY_LEN);
+        wstr(logfd, "\nNONCE=");             whex(logfd, nonce, NONCE_LEN);
+        wstr(logfd, "\nPTLEN=");             wdec(logfd, (unsigned long long)ptlen);
+        wstr(logfd, "\nPT=");                whex(logfd, plaintext, ptcap);
+        wstr(logfd, "\nRC=");                wdec(logfd, (unsigned)rc);
+        if (rc == 0) {
+            wstr(logfd, "\nCT=");            whex(logfd, out, ctcap);
+        }
+        wstr(logfd, "\n---\n");
+    }
+    return rc;
+}
+
 /* --- BLAKE2b hooks ---
  *
  * Hook the public API (crypto_generichash_*) and call the private/low-level
