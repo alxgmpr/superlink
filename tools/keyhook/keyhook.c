@@ -21,10 +21,22 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <stddef.h>
+
+/* Pin dlsym to the oldest armhf glibc symbol version so the resulting .so
+ * loads on the bridge's glibc 2.30 regardless of what the Mac's cross
+ * compiler defaults to. GLIBC_2.4 is the armhf baseline. */
+__asm__(".symver dlsym,dlsym@GLIBC_2.4");
+extern void *dlsym(void *handle, const char *name);
+#define RTLD_NEXT ((void *)-1l)
 
 #define NONCE_LEN 24
 #define KEY_LEN   32
+#ifdef KEYHOOK_QUIET
+#define MAX_LOG   200000   /* SSL-only build: long-running pair capture */
+#else
 #define MAX_LOG   30000
+#endif
 
 static int logfd = -1;
 static int log_count = 0;
@@ -268,6 +280,7 @@ void randombytes_buf(void *buf, unsigned long size) {
     }
 }
 
+#ifndef KEYHOOK_QUIET
 /* --- memcpy / memmove / memset hooks ---
  *
  * Catch structured assembly of the 70-byte SwitchClassBRsp body. The 64B
@@ -279,6 +292,10 @@ void randombytes_buf(void *buf, unsigned long size) {
  * To avoid recursion, implement each op byte-by-byte internally. Slower
  * than the real glibc assembly versions, but it's only active for the
  * pairing window.
+ *
+ * Y3 update: the 70B grant turned out to be controller-generated and
+ * arrives via JSON-RPC `sendMessage.data`, not built locally on the bridge.
+ * These hooks are now noise — disabled when KEYHOOK_QUIET is set.
  */
 
 #define FW_TEXT_LO 0x10000u
@@ -402,15 +419,14 @@ void *memset(void *dst, int v, size_t n) {
     return r;
 }
 
-/* --- WebSocket JSON-RPC capture via send/recv hooks ---
+#endif /* !KEYHOOK_QUIET (mem hooks) */
+
+#ifndef KEYHOOK_QUIET
+/* --- TCP send/recv hooks (TLS ciphertext) ---
  *
- * The bridge talks to the UniFi controller over plain WebSocket at
- * ws://10.1.1.1:41522 using JSON-RPC envelopes. Hooking send/recv on that
- * socket reveals the full JSON conversation — including whatever field
- * carries the 64B Class B grant payload.
- *
- * Call sendto/recvfrom (separate libc symbols from send/recv) internally
- * to avoid hook recursion. No dlsym, no GLIBC_2.34.
+ * Hooking these on the controller WS socket gave us TLS-encrypted bytes —
+ * useful before SSL_read/SSL_write hooks existed. Now superseded by the
+ * SSL plaintext hooks below; disabled in quiet builds.
  */
 
 typedef long ssize_t_t;  /* ssize_t — avoid pulling in the real header's typedef */
@@ -448,4 +464,87 @@ ssize_t_t recv(int fd, void *buf, size_t len, int flags) {
         wstr(logfd, "\n---\n");
     }
     return r;
+}
+
+#endif /* !KEYHOOK_QUIET (send/recv hooks) */
+
+/* --- OpenSSL plaintext hooks ---
+ *
+ * lorabrd links libssl.so.3 + libcrypto.so.3 (confirmed via /proc/<pid>/maps
+ * on the bridge). Hooking send/recv below gives us TLS ciphertext only.
+ * Hooking SSL_read/SSL_write gives plaintext — i.e. the WebSocket-framed,
+ * permessage-deflate-compressed controller<->bridge stream. A Python
+ * post-processor (tools/keyhook/ssl_decode.py) parses WS framing and
+ * inflates deflate to recover JSON-RPC.
+ *
+ * Notes on the hook:
+ *   - We cache the real function pointer lazily via dlsym(RTLD_NEXT, ...).
+ *   - Log the SSL* pointer so the post-processor can demux multiple
+ *     simultaneous TLS connections (controller WS + any incidental HTTPS).
+ *   - For SSL_write, dump plaintext BEFORE calling through so we capture
+ *     the buffer the caller presented (SSL_write doesn't mutate it, but
+ *     logging pre-call makes the ordering match the wire order with
+ *     SSL_read's post-call dump).
+ *   - Success for SSL_read/SSL_write: positive return. For _ex forms:
+ *     returns 1 on success and writes *readbytes / *written.
+ */
+
+static int (*real_SSL_read)(void *, void *, int) = 0;
+static int (*real_SSL_write)(void *, const void *, int) = 0;
+static int (*real_SSL_read_ex)(void *, void *, size_t, size_t *) = 0;
+static int (*real_SSL_write_ex)(void *, const void *, size_t, size_t *) = 0;
+
+#define SSL_MAX_LOG_BYTES 4096
+
+static void log_ssl(const char *func, const void *ssl, const void *ra,
+                    const unsigned char *buf, size_t n) {
+    if (!bump()) return;
+    size_t cap = n < SSL_MAX_LOG_BYTES ? n : SSL_MAX_LOG_BYTES;
+    wstr(logfd, "FUNC=");     wstr(logfd, func);
+    wstr(logfd, "\nSSL=");    wptr(logfd, ssl);
+    wstr(logfd, "\nRA=");     wptr(logfd, ra);
+    wstr(logfd, "\nLEN=");    wdec(logfd, (unsigned long long)n);
+    wstr(logfd, "\nDATA=");   whex(logfd, buf, cap);
+    wstr(logfd, "\n---\n");
+}
+
+int SSL_read(void *ssl, void *buf, int num) {
+    const void *ra = __builtin_return_address(0);
+    if (!real_SSL_read)
+        real_SSL_read = dlsym(RTLD_NEXT, "SSL_read");
+    int r = real_SSL_read(ssl, buf, num);
+    if (r > 0)
+        log_ssl("ssl_read", ssl, ra, (const unsigned char *)buf, (size_t)r);
+    return r;
+}
+
+int SSL_write(void *ssl, const void *buf, int num) {
+    const void *ra = __builtin_return_address(0);
+    if (!real_SSL_write)
+        real_SSL_write = dlsym(RTLD_NEXT, "SSL_write");
+    /* Log pre-call: the plaintext the caller handed us, whatever the
+     * actual bytes-written count ends up being. Keeps wire ordering
+     * deterministic when paired with SSL_read's post-call log. */
+    if (num > 0)
+        log_ssl("ssl_write", ssl, ra, (const unsigned char *)buf, (size_t)num);
+    return real_SSL_write(ssl, buf, num);
+}
+
+int SSL_read_ex(void *ssl, void *buf, size_t num, size_t *readbytes) {
+    const void *ra = __builtin_return_address(0);
+    if (!real_SSL_read_ex)
+        real_SSL_read_ex = dlsym(RTLD_NEXT, "SSL_read_ex");
+    int rc = real_SSL_read_ex(ssl, buf, num, readbytes);
+    if (rc == 1 && readbytes && *readbytes > 0)
+        log_ssl("ssl_read_ex", ssl, ra, (const unsigned char *)buf, *readbytes);
+    return rc;
+}
+
+int SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written) {
+    const void *ra = __builtin_return_address(0);
+    if (!real_SSL_write_ex)
+        real_SSL_write_ex = dlsym(RTLD_NEXT, "SSL_write_ex");
+    if (num > 0)
+        log_ssl("ssl_write_ex", ssl, ra, (const unsigned char *)buf, num);
+    return real_SSL_write_ex(ssl, buf, num, written);
 }

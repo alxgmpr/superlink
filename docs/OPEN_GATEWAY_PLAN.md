@@ -280,18 +280,68 @@ Retained notes:
 | Class B grant 64B middle content | ❌ blocked — local byte-store generation invisible |
 | Sensor reaches paired state | ❌ blocked on Class B grant OR mock controller |
 | Works on arbitrary factory sensor | ❌ blocked on mock controller replay |
-| Mock UniFi controller handshake | ✅ Phase Y1-Y2 done — mock connects to real bridge |
-| Drive end-to-end pair via mock | ❌ next milestone — Phase Y3 |
+| Mock UniFi controller handshake | ✅ Phase Y1-Y2 done |
+| Plaintext capture of bridge↔controller JSON-RPC | ✅ Phase Y3 done — full method vocabulary + 70B grant + KDF inputs all captured |
+| Drive end-to-end pair via mock | ❌ next milestone — Phase Y4 |
+| 64B grant-middle algorithm | 🟡 strong hypothesis: `[32B X25519 ephemeral pubkey LE] \|\| [32B Poly1305 MAC + ciphertext]` — see [controller_y3_findings.md](protocol/controller_y3_findings.md) |
 
 **Phase Y1-Y2 results (2026-04-21):** Mock controller at
 [`tools/mock_controller/server.py`](../tools/mock_controller/server.py)
 successfully handshakes with the real bridge. Requirements discovered:
 bridge is the WSS server on `:8571`, requires mTLS with any
 CN=localhost client cert (bridge's own `lorabr.cert/key` works),
-`Sec-WebSocket-Protocol: ucp4`, and `X-Mode: 0` header.
+`Sec-WebSocket-Protocol: ucp4`. `X-Mode: 0` header is *optional* —
+the real controller doesn't send it; mock works either way.
 
-Next concrete step: **Phase Y3** — replay captured JSON-RPC requests
-against the mock's connection and observe bridge responses. The
-bridge doesn't push events on our new connection spontaneously (it's
-request-driven), so we need to drive the flow with synthetic
-requests from the mock.
+**Phase Y3 results (2026-04-29):** plaintext JSON-RPC captured by
+LD_PRELOAD-hooking `SSL_read`/`SSL_write` on the bridge (see
+[`tools/keyhook/keyhook.c`](../tools/keyhook/keyhook.c)). Decoder at
+[`tools/keyhook/ssl_decode.py`](../tools/keyhook/ssl_decode.py).
+Findings written up in
+[`docs/protocol/controller_y3_findings.md`](protocol/controller_y3_findings.md).
+Headlines:
+- The **70-byte Class B grant is computed by the controller** and
+  pushed to the bridge as a `sendMessage.data` field. Bridge is a
+  pure relay — no local generation. The "grant" we'd been hunting on
+  the bridge with memset/memcpy hooks lives in the UniFi Network app.
+- **Session-key KDF input #4 = `addDevice.key`** — empirically
+  confirmed against `gh_update` traces. Per-sensor persistent secret
+  for our test sensor is `c5923a86…d7bd38db`.
+- Real method vocabulary: `bridgeInfoGet`, `keyExchange`, `authorize`,
+  `discoveryStart`, `addDevice`, `removeDevice`, `sendMessage` (+ events
+  `discoveryResult`, `devsInfoChanged`, `messageReceived`).
+- New sensor UL inner-type `0x03` (66B) — sensor's confirmation of
+  the grant, sent immediately after.
+
+### Phase Y4 — drive a real pair from the mock (next)
+
+We now have ground truth on every controller-side behaviour needed.
+Path to a sensor pairing via our mock:
+
+1. **Replay-mode mock**: extend
+   [`tools/mock_controller/server.py`](../tools/mock_controller/server.py)
+   so that on bridge connection it walks the captured pair script in
+   order — `bridgeInfoGet` request → `keyExchange` → `authorize` →
+   `discoveryStart` → on incoming `discoveryResult` event for a known
+   sensor, push `addDevice` with the persistent key, then on incoming
+   `messageReceived` events, push the captured `sendMessage.data`
+   bytes (including the 70-byte grant) at the right step.
+2. **Test against the same already-paired sensor first.** Force a
+   re-pair (factory reset) with our mock as the only controller. If
+   the sensor reaches ACTIVE, Y4 is proven for "known sensor".
+3. **Generalize**: replace canned values with sensor-keyed lookups so
+   we can pair multiple sensors whose keys we've previously captured.
+
+### Phase Y5 — generalize across fresh sensors (deferred)
+
+Pairing a *previously-unseen* factory-reset sensor still requires
+either:
+- The persistent `addDevice.key` for that sensor (which lives in the
+  real controller's DB and isn't observable without RE'ing it), OR
+- The 64B grant-middle algorithm (which lets us generate valid grants
+  for any sensor).
+
+Open question — see `docs/protocol/controller_y3_findings.md` "Open
+questions". A sub-agent is currently analysing the captured 64B
+middle for substring/structural matches against known constants;
+result will inform whether grant generation is tractable.
