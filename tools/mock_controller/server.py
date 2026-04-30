@@ -508,7 +508,13 @@ class MockController:
 
     async def on_grant_ack(self, ws, sensor: Sensor) -> None:
         log.info("grant acknowledged by %s; rotating key", sensor.mac_no_colons)
-        await self.request(ws, "removeDevice", {"mac": sensor.mac_no_colons})
+        # Same timing problem as addDevice — bridge response to removeDevice
+        # didn't arrive within 30s on 2026-04-30 phase 2 retry, killing the
+        # rotation mid-flight (TimeoutError → asyncio cancelled the WS).
+        # The bridge syslog shows "Remove" handled instantly; the response
+        # is just delayed/missing on the wire. Fire-and-forget for the same
+        # reasons as send_addDevice above.
+        await self.fire_and_forget(ws, "removeDevice", {"mac": sensor.mac_no_colons})
         await self.send_addDevice(
             ws, sensor, sensor.rotated_key, fallback=sensor.rotated_fallback_key
         )
