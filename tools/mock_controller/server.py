@@ -426,11 +426,15 @@ class MockController:
         params: dict[str, Any] = {"mac": sensor.mac_no_colons, "key": key}
         if fallback:
             params["fallbackKey"] = fallback
-        # Y3 capture: real UniFi waited ~80s for the bridge to ack addDevice
-        # while the bridge negotiates with the sensor. The default 30s here
-        # raised TimeoutError mid-flight on 2026-04-30 and the partial
-        # registration poisoned subsequent retries with "Duplicate device".
-        await self.request(ws, "addDevice", params, timeout=90.0)
+        # Fire-and-forget: bridge syslog (2026-04-30 phase 2) shows the
+        # bridge takes ~90s to ack addDevice — it waits for the LoRa
+        # session-key handshake with the sensor to complete before responding.
+        # We don't need to block on that: the captured Y3 trace shows the
+        # 3-burst follows addDevice within ms (the bridge accepts the burst
+        # and queues it as DL the moment session is up). If we await the ack
+        # we either race against it (90s timeout) or block our own burst,
+        # leaving the sensor with no grant payload to ACK.
+        await self.fire_and_forget(ws, "addDevice", params)
 
     async def send_sendMessage_data(self, ws, sensor: Sensor, data_hex: str) -> str:
         """Push raw DL bytes via fire-and-forget sendMessage."""
