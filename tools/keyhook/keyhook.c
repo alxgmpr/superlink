@@ -212,13 +212,55 @@ int memcmp(const void *a, const void *b, size_t n) {
     int r = local_memcmp(a, b, n);
     /* Authorize handler memcmp is at lorabrd 0x5fe18 (Thumb LR after BLX). */
     uintptr_t rai = (uintptr_t)ra;
-    if (n == 32 && rai >= 0x5fe00 && rai < 0x5fe40 && bump()) {
+    int is_authorize = (n == 32 && rai >= 0x5fe00 && rai < 0x5fe40);
+    if (is_authorize && bump()) {
         wstr(logfd, "FUNC=memcmp\nRA=");  wptr(logfd, ra);
         wstr(logfd, "\nLEN=");             wdec(logfd, n);
         wstr(logfd, "\nA=");               whex(logfd, (const unsigned char *)a, n);
         wstr(logfd, "\nB=");               whex(logfd, (const unsigned char *)b, n);
         wstr(logfd, "\nRC=");              wdec(logfd, (unsigned)r);
-        wstr(logfd, "\n---\n");
+        /* Dump heap context near A to identify the parent auth_state struct.
+         * A is &EXPECTED[0]; the std::vector header (begin/end/end_cap) sits
+         * 0x48 bytes earlier inside auth_state. Dump 0x60 bytes before A
+         * to capture the surrounding header info. */
+        const unsigned char *ap = (const unsigned char *)a;
+        wstr(logfd, "\nA_ADDR=");  wptr(logfd, a);
+        wstr(logfd, "\nA_CTX=");   whex(logfd, ap - 0x60, 0xc0);
+        wstr(logfd, "\n");
+    }
+    /* Bypass mode: when the LD_PRELOAD'd lorabrd was started with
+     * KEYHOOK_BYPASS_AUTH=1 in the environment, force the authorize-handler
+     * memcmp to return 0 ("equal") regardless of the actual byte comparison.
+     * This lets a mock controller authorize successfully without knowing the
+     * per-connection EXPECTED. Other memcmp callsites are unaffected. */
+    if (is_authorize) {
+        static int bypass_checked = 0;
+        static int bypass_enabled = 0;
+        if (!bypass_checked) {
+            extern char **environ;
+            char **e = environ;
+            while (e && *e) {
+                const char *s = *e;
+                if (s[0]=='K' && s[1]=='E' && s[2]=='Y' && s[3]=='H'
+                    && s[4]=='O' && s[5]=='O' && s[6]=='K' && s[7]=='_'
+                    && s[8]=='B' && s[9]=='Y' && s[10]=='P' && s[11]=='A'
+                    && s[12]=='S' && s[13]=='S' && s[14]=='_' && s[15]=='A'
+                    && s[16]=='U' && s[17]=='T' && s[18]=='H' && s[19]=='='
+                    && s[20]=='1') {
+                    bypass_enabled = 1;
+                    break;
+                }
+                e++;
+            }
+            bypass_checked = 1;
+        }
+        if (bypass_enabled) {
+            if (bump()) {
+                wstr(logfd, "FUNC=memcmp_bypass\nRA=");  wptr(logfd, ra);
+                wstr(logfd, "\n---\n");
+            }
+            return 0;
+        }
     }
     return r;
 }
