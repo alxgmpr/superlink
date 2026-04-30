@@ -6,11 +6,16 @@ using our mock controller, replaying the captured Y3 script.
 
 ## Status
 
-**Implementation complete, framing verified live, but Phase 1 blocked
-on `authorize.secret` content validation.** The bridge runs
-`crypto_secretbox_open_easy` over the base64-decoded secret with
-key/nonce we can't yet derive statically — every random / replayed /
-hypothesised secret returns errorCode 4 "Bad secret".
+**Implementation complete, framing verified live, crypto chain
+confirmed correct, but Phase 1 blocked on per-connection EXPECTED
+selection.** The bridge runs `crypto_secretbox_open_easy` over the
+base64-decoded secret with key/nonce we now correctly derive — the
+PT decodes cleanly. The remaining blocker is that the bridge's
+`memcmp` target (`[auth_state+0x48]`) holds different bytes for
+different connection origins: the real UniFi controller from
+`10.1.1.1` gets `EXPECTED=3c232e92…`, the mock from `10.1.1.68`
+gets `EXPECTED=1315740706…`, all in the same lorabrd process for the
+same clientID. We don't yet know what selects the value.
 
 | step | status |
 |---|---|
@@ -18,17 +23,18 @@ hypothesised secret returns errorCode 4 "Bad secret".
 | 16-bit BE framing fix | ✅ verified live (TLS+WS+UBNT round-trip OK) |
 | Unit tests for framing + state machine | ✅ 15 passing |
 | `bridgeInfoGet` / `keyExchange` round-trip | ✅ live, response shape matches Y3 |
-| `authorize.secret` validation | ❌ **NEW BLOCKER** — secret is content-validated, format unknown |
+| Crypto chain (X25519 + BLAKE2b + secretbox) | ✅ verified — bridge's `secretbox_open` returns rc=0 with our ciphertext |
+| `authorize.secret` content validation | ❌ blocked — bridge expects per-connection EXPECTED we can't derive |
 | Phase 1 idle test (mock as sole controller) | 🟡 blocked on authorize |
 | Phase 2 pair test (factory-reset sensor) | 🟡 blocked on Phase 1 |
 | Phase 3 ACTIVE confirmation | 🟡 blocked on Phase 2 |
 
-## NEW Y4 findings — authorize.secret crypto cracked, EXPECTED still unknown
+## Y4 findings (revised 2026-04-30) — crypto chain confirmed, EXPECTED is per-CONNECTION
 
 The Y3 capture showed the bridge accepting random-looking 48-byte
 base64 secrets, so we modeled `secret` as opaque session-state. That
-was wrong. Live test 2026-04-29 with `crypto_secretbox_open_easy` and
-`memcmp` hooked in `lorabrd` revealed the full validation:
+was wrong. Live tests 2026-04-29 + 2026-04-30 with `secretbox_open`
+and `memcmp` hooked in `lorabrd` revealed the full validation:
 
 ```
 1. controller sends keyExchange.key = 32B X25519 pubkey
@@ -37,7 +43,7 @@ was wrong. Live test 2026-04-29 with `crypto_secretbox_open_easy` and
 4. bridge derives:
        key = blake2b-32(shared || ctl_pub || bridge_pub || BRIDGE_SALT)
    where BRIDGE_SALT is a 32B per-clientID, **persistent across
-   lorabrd restarts** value (we don't yet know its source).
+   lorabrd restarts** value.
 5. controller sends authorize.secret = base64(secretbox_easy(
        plaintext = AUTH_TOKEN,
        nonce     = ZEROS(20) || ASCII("UBNU"),
@@ -46,59 +52,174 @@ was wrong. Live test 2026-04-29 with `crypto_secretbox_open_easy` and
    memcmp(decoded_PT, EXPECTED, 32). If equal → authorize ok.
 ```
 
-Captured live for clientID `652ee9b0-8ea3-41a9-8589-b601159ea6b6`:
-- BRIDGE_SALT = `69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07`
-  (stable across two separate lorabrd processes — persistent state).
-- EXPECTED = `1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae`
-  for the latest lorabrd process. **EXPECTED differs** between
-  processes — `3c232e926c94efc66099574fa66ac41cb414971d0f0d744b29f1e2b21ea61f50`
-  in an earlier capture. Regenerated per-process.
+For clientID `652ee9b0-8ea3-41a9-8589-b601159ea6b6`,
+BRIDGE_SALT = `69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07`
+(stable across lorabrd processes).
 
-So the mock can now produce a secret that **decrypts cleanly** on the
-bridge side (the `crypto_secretbox_open_easy` returns rc=0). What it
-can't do is produce a plaintext that matches the bridge's per-process
-EXPECTED — every test ended at `memcmp` returning non-zero with our
-plaintext (3c232e92…) versus the bridge's EXPECTED (13157407…).
+**Crypto chain confirmed working**: live test 2026-04-30 with the mock
+producing the X25519 + BLAKE2b + secretbox chain → bridge's
+`crypto_secretbox_open_easy` returns rc=0, decrypts to our chosen PT.
+Only the memcmp against EXPECTED still fails (errorCode 4 "Bad secret").
 
-EXPECTED isn't:
-- In `/etc/persistent/*` (grep'd both ASCII and hex).
-- In the heap of a fresh hooked `lorabrd` (dumped 0x10a000–0x179000).
-- The bridge's `authToken` from `ubnt_avclient.conf`, or any
-  obvious BLAKE2b/SHA derivation thereof.
-- Captured in keyhook events (no `randombytes`, `gh_*`, or other
-  hooked symbol produces it during the connection — meaning it
-  exists *before* we observe it).
+### The 2026-04-29 doc was wrong about EXPECTED rotation
 
-That last bullet is the key clue: EXPECTED is a per-clientID secret
-that the bridge **already has** by the time the controller's authorize
-arrives. Source candidates:
+Earlier writeup claimed EXPECTED "regenerated per lorabrd process"
+based on observing two distinct values across captures
+(`3c232e92…` and `1315740706…`). The 2026-04-30 capture proves the
+truth is more subtle: **EXPECTED is per-CONNECTION, not per-process**.
 
-1. **avclient adoption sync** — when ubnt_avclient (port 7442 to
-   UniFi cloud) adopts the bridge, the cloud may push a per-controller
-   EXPECTED token into bridge memory via a different protocol that
-   `lorabrd` then reads.
-2. **Cross-process IPC** — `lorabrd` reads the value from `ubnt_avclient`
-   on demand (via Unix socket / shared memory).
-3. **Derivation from a longer-lived bridge secret** that we haven't
-   inspected yet (dropbear host key? mTLS private key bytes?).
+PID 384 (single lorabrd lifetime) capture, two memcmp events:
+- mock connection from `10.1.1.68`: `A=1315740706…`, `B=3c232e92…` → mismatch
+- real controller from `10.1.1.1`:   `A=3c232e92…`,   `B=3c232e92…` → match
+
+Same lorabrd PID, same clientID, same client cert (lorabr.cert/key) —
+**different bridge-side EXPECTED values**. Both controllers send the
+SAME plaintext (`3c232e92…`), confirming that `3c232e92…` is the actual
+shared AUTH_TOKEN. The puzzle is why the bridge's stored EXPECTED for
+the mock connection was `1315740706…` instead.
+
+### Data structure layout (Ghidra, FUN_0005f8b0)
+
+The auth check is at `[param_1+4]+0x48`:
+```c
+FUN_0003bfa8(&local_b8, &local_e8, *(undefined4 *)(param_1 + 0x30), 0, &local_1c8);
+pvVar7 = *(void **)(*(int *)(param_1 + 4) + 0x48);  // EXPECTED begin
+__n    =  *(int *)(*(int *)(param_1 + 4) + 0x4c) - (int)pvVar7;  // size
+if (... memcmp(pvVar7, local_b8, __n) != 0) { throw "Bad secret"; }
+```
+
+`param_1+4` points at an `auth_state` object; offsets 0x3c and 0x48
+hold two `std::vector<uint8_t>` (begin/end/end_cap):
+- `[+0x3c]` vector — **NEXT_SECRET** the bridge encrypts and sends
+  to the controller (PT=`1315740706…` in the real-controller session)
+  via the radio0 secret response path:
+  ```c
+  FUN_0003bf58(&local_1bc, *(int *)(param_1 + 4) + 0x3c, ...);
+  // → secretbox(NEXT_SECRET, key, ZEROS+"UBNV") → base64
+  // → {"iface":"radio0","secret":"<b64>"}
+  ```
+- `[+0x48]` vector — **EXPECTED** (the memcmp target)
+
+Same KEY is used for both directions (decrypt UBNU / encrypt UBNV).
+
+Heap dump of PID 3114 (real-controller session) confirmed both
+vectors at `auth_state` base `0x16659c`:
+```
++0x3c: 00145940  (begin OTHER) ─→  1315740706b7eb7f0eb925af76a805a5...
++0x40: 00145960  (end)
++0x44: 00145960  (end_cap)
++0x48: 00145b30  (begin EXPECTED) ─→  3c232e926c94efc66099574fa66ac4...
++0x4c: 00145b50  (end)
++0x50: 00145b50  (end_cap)
+```
+
+### What we ruled out for EXPECTED's source
+
+- **Not** in `/etc/persistent/*` (binary + ASCII grep).
+- **Not** in `/etc/avclient_state.json` (different schema, `authToken`
+  field is for ubnt_avclient ↔ UniFi cloud auth on port 7442, not
+  lorabrd's authorize.secret).
+- **Not** in any other rootfs file (full filesystem grep negative).
+- **Not** in lorabrd's BSS/data segment or any rw region of an idle
+  lorabrd process — only appears when a connection is being
+  authenticated, freed when connection closes.
+- **Not** any obvious BLAKE2b/SHA-256 derivation of
+  `authToken / BRIDGE_SALT / clientID / shared / ctl_pub / br_pub /
+  session_key` or pairwise concatenations/HMACs (tested ~30 combos
+  for both captured (ctl_pub, EXPECTED) pairs — none match).
+- **Not** caught by libsodium hooks during the connection (no
+  `randombytes`, `gh_*`, `scalarmult` produces it). The struct is
+  populated **before the secretbox_open call** that yields the PT.
+- **Not** triggered by `X-Mode: 0` header (real controller doesn't
+  send it either; architecture doc was misleading).
+
+### Open question: per-connection EXPECTED selection
+
+What differs between the mock (`10.1.1.68`) and real controller
+(`10.1.1.1`) connections that makes the bridge load different
+EXPECTED bytes?
+
+Same:
+- clientID (`652ee9b0-8ea3-41a9-8589-b601159ea6b6`)
+- mTLS cert (both present `lorabr.cert/lorabr.key`)
+- Sec-WebSocket-Protocol: ucp4
+- WS handshake otherwise
+
+Different:
+- Source IP / port
+- SSL session ID (each connection fresh, no resumption)
+- HTTP header order; mock sends `User-Agent: Python/3.14
+  websockets/16.0`, real omits User-Agent
+
+None of these obviously index into a different "slot" of stored
+secrets, but something about the incoming connection identity must
+select which 32-byte buffer goes into `auth_state[+0x48]`. Likely
+candidates to investigate:
+
+1. **`sub_5fdfc` callers** — what populates `auth_state` before
+   FUN_0005f8b0 runs? Look at the WS handshake → ucp4 validate →
+   first request handler chain.
+2. **The `[+0x3c]` vs `[+0x48]` swap** — if the bridge has only ONE
+   underlying value and mistakenly uses `+0x3c` (the
+   "NEXT_SECRET-to-send") as `+0x48` (the memcmp target) for some
+   connections, that'd explain why the mock got `1315740706…`. Check
+   the constructor / setter functions for those vectors.
+3. **OpenSSL hooks** — keyhook only catches libsodium. lorabrd uses
+   libcrypto.so.3 for TLS; if EXPECTED is computed via libcrypto
+   primitives (HMAC-SHA256, AES, etc.) we wouldn't see it.
 
 ## Path forward
 
-Two productive next moves:
+Pragmatic options for a working open-gateway path:
 
-1. **Hook `lorabrd`'s `r4[#4][#72]` access** (the std::string holding
-   EXPECTED, accessed at `0x5fe02`). Either:
-   - Add an `mprotect`-based watchpoint via gdbserver on that address.
-   - Hook the std::string allocator and log every 32-byte
-     allocation tagged with caller RA — find the path that fills
-     EXPECTED.
-2. **Hook `ubnt_avclient`** in the same way — if it provides EXPECTED
-   to lorabrd via IPC, the call chain is observable.
+1. **Static RE the auth_state initialization** (Ghidra) — find what
+   writes `[auth_state+0x48]` and `[auth_state+0x3c]` per
+   connection. xrefs to `0x5f8b0` (entry of FUN_0005f8b0) plus the
+   constructor of the parser/connection-state object.
+2. **Live extract via gdbserver** — break at `0x5fe14` (memcmp call),
+   read `r0` as EXPECTED, send back via a side channel to the mock
+   in real time. Race-y but doable.
+3. **Patch lorabrd binary** — replace the `memcmp` with a constant
+   `mov r0, #0; bx lr` to bypass the check. Heavy-handed but
+   guarantees mock can authorize.
+4. **Hook `open()/read()` in keyhook** — extend the LD_PRELOAD to
+   trace every file read at lorabrd startup. If EXPECTED comes from
+   a file (or `/dev/urandom` direct read), we'll see it.
+5. **Hook `ubnt_avclient`'s SSL** — even though lorabrd has no Unix
+   socket to ubnt_avclient, ubnt_avclient itself may push values
+   into shared memory or a watched file. Worth a separate keyhook
+   deployment on ubnt_avclient.
 
-Until EXPECTED is known, the mock controller blocks at `authorize`
-with `errorCode 4 "Bad secret"`. The mock IS now correctly
-performing the crypto chain (verified end-to-end via keyhook); only
-the EXPECTED plaintext is wrong.
+## What's confirmed working
+
+- TLS + WS + UBNT framing (16-bit BE length prefix) round-trips
+- bridgeInfoGet, keyExchange complete cleanly
+- mock's X25519 + BLAKE2b session-key derivation produces the SAME
+  key the bridge derives (verified: `secretbox_open` returns rc=0)
+- `authorize.secret` = `base64(secretbox(AUTH_TOKEN, ZEROS+"UBNU", key))`
+  decrypts cleanly on the bridge side
+- The mock's hardcoded `AUTH_TOKEN=3c232e92…` IS the value the real
+  UniFi controller sends (verified by capturing real controller's
+  successful authorize → `secretbox_open` PT = `3c232e92…`)
+- Bridge accepts mock connection (TLS, WS, ucp4 handshake all OK)
+  ONLY when the real controller is firewalled — without firewall we
+  get errorCode 12 "Duplicate connection" before crypto runs
+- Bridge sends NEXT_SECRET response (encrypted with NONCE_tail="UBNV")
+  AFTER successful authorize — the mock currently logs but ignores
+  this response
+
+## Methods used 2026-04-30
+
+- Re-imported `lorabrd` into Ghidra 12.0.4 headlessly via
+  `analyzeHeadless` with project at
+  `firmware/analysis/up-sense-link/ghidra_project/lorabrd_proj`. Decomp
+  output of FUN_0005f8b0 / FUN_0003bfa8 / FUN_0002ffb8 is in
+  `/tmp/authorize_analysis.txt` (regenerate via
+  `tools/ghidra_scripts/dump_authorize.py`).
+- Used `ip route add blackhole 10.1.1.1/32` + `tcp_retries2=3` to
+  briefly drop the real-controller connection so the mock could
+  attempt authorize without the duplicate-clientID rejection.
+  Restored both after the test.
 
 ## Phase 1 prerequisites — UPDATED
 

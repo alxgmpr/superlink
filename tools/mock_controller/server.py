@@ -169,6 +169,18 @@ class MockController:
     BRIDGE_SALT = bytes.fromhex(
         "69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07"
     )
+    # AUTH_TOKEN is the plaintext that gets encrypted into authorize.secret.
+    # 2026-04-30 finding: the bridge's stored EXPECTED is per-CONNECTION, not
+    # per-clientID — even with identical clientID, identical client cert, and
+    # identical lorabrd PID, the bridge's [auth_state+0x48] memcmp target
+    # differs based on something about the incoming connection (source IP?
+    # SSL session id? connection counter?). See
+    # docs/protocol/controller_y4_results.md for the full analysis.
+    #
+    # The value below is what the real UniFi controller sends (and what the
+    # bridge expects when the real controller connects from 10.1.1.1). It is
+    # NOT a fixed protocol constant — for connections from other origins the
+    # bridge expects a different value we don't yet know how to derive.
     AUTH_TOKEN = bytes.fromhex(
         "3c232e926c94efc66099574fa66ac41cb414971d0f0d744b29f1e2b21ea61f50"
     )
