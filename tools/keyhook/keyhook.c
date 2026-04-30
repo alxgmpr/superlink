@@ -690,3 +690,96 @@ int SSL_write_ex(void *ssl, const void *buf, size_t num, size_t *written) {
         log_ssl("ssl_write_ex", ssl, ra, (const unsigned char *)buf, num);
     return real_SSL_write_ex(ssl, buf, num, written);
 }
+
+/* --- read hook (file-source hunting for authorize EXPECTED) ---
+ *
+ * 2026-04-30: lorabrd's per-connection EXPECTED for authorize.secret memcmp
+ * is generated/loaded somehow but is NOT caught by libsodium hooks. Likely
+ * source: direct file read (lorabrd has fd 10 → /dev/urandom).
+ *
+ * Implementation: bypass libc entirely via direct ARM EABI syscall.
+ * dlsym(RTLD_NEXT, "read") caused SIGSEGV during early init due to
+ * recursion (dlsym uses read internally). The svc-based syscall avoids
+ * that completely.
+ *
+ * Filter:
+ *   - RA in lorabrd .text range (0x10000..0xef000) — skips ld.so / libc reads
+ *   - Read length 4..256 bytes — crypto-sized
+ *
+ * Build with -DKEYHOOK_QUIET=1 — without that flag, the memcpy/memmove
+ * hooks above produce a binary that crashes early (something in their
+ * pass-through logic interacts badly with libstdc++ init).
+ */
+#include <sys/types.h>
+#include <errno.h>
+
+/* Direct ARM EABI syscall for read(). r0..r2 = args, r7 = syscall #,
+ * result back in r0. Use "+r" (in-out) on r0 — declaring two register
+ * variables on the same physical register (separate input + output) is
+ * undefined and was the bug in our first attempt. */
+static ssize_t kh_syscall_read(int fd, void *buf, size_t count) {
+    register int r0 asm("r0") = fd;
+    register void *r1 asm("r1") = buf;
+    register size_t r2 asm("r2") = count;
+    register int r7 asm("r7") = 3;  /* __NR_read on ARM EABI */
+    asm volatile("svc 0"
+                 : "+r"(r0)
+                 : "r"(r1), "r"(r2), "r"(r7)
+                 : "memory");
+    if (r0 < 0 && r0 > -4096) {
+        errno = -r0;
+        return -1;
+    }
+    return r0;
+}
+
+ssize_t read(int fd, void *buf, size_t count) {
+    const void *ra = __builtin_return_address(0);
+    ssize_t r = kh_syscall_read(fd, buf, count);
+    /* Log all reads up to 4KB. Inside this we cap captured bytes at 256
+     * but report the actual length so we can spot 4KB entropy-pool seeds.
+     * Skip very large (file-slurp) reads to keep log size reasonable. */
+    if (r > 0 && r >= 4 && r <= 4096 && bump()) {
+        size_t cap = (size_t)r < 256 ? (size_t)r : 256;
+        wstr(logfd, "FUNC=read\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nFD=");            wdec(logfd, (unsigned)fd);
+        wstr(logfd, "\nLEN=");           wdec(logfd, (unsigned long long)r);
+        wstr(logfd, "\nDATA=");          whex(logfd, (const unsigned char *)buf, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
+
+/* getrandom() — modern glibc's preferred random source. libsodium uses this
+ * over /dev/urandom when available. Direct syscall same as read.
+ * Linux: __NR_getrandom = 384 on ARM EABI. Args: (buf, buflen, flags). */
+static ssize_t kh_syscall_getrandom(void *buf, size_t buflen, unsigned int flags) {
+    register void *r0 asm("r0") = buf;
+    register size_t r1 asm("r1") = buflen;
+    register unsigned int r2 asm("r2") = flags;
+    register int r7 asm("r7") = 384;
+    asm volatile("svc 0"
+                 : "+r"(r0)
+                 : "r"(r1), "r"(r2), "r"(r7)
+                 : "memory");
+    long ret = (long)r0;
+    if (ret < 0 && ret > -4096) {
+        errno = (int)-ret;
+        return -1;
+    }
+    return ret;
+}
+
+ssize_t getrandom(void *buf, size_t buflen, unsigned int flags) {
+    const void *ra = __builtin_return_address(0);
+    ssize_t r = kh_syscall_getrandom(buf, buflen, flags);
+    if (r > 0 && bump()) {
+        size_t cap = (size_t)r < 256 ? (size_t)r : 256;
+        wstr(logfd, "FUNC=getrandom\nRA=");  wptr(logfd, ra);
+        wstr(logfd, "\nLEN=");                wdec(logfd, (unsigned long long)r);
+        wstr(logfd, "\nFLAGS=");              wdec(logfd, (unsigned long long)flags);
+        wstr(logfd, "\nDATA=");               whex(logfd, (const unsigned char *)buf, cap);
+        wstr(logfd, "\n---\n");
+    }
+    return r;
+}
