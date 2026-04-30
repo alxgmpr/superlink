@@ -405,6 +405,56 @@ challenge every ~34 s. In that case we go to Phase Y5 (compute our
 own grant by ECDH against the sensor's static pubkey, which we'd
 need to recover separately).
 
+### Phase 2 attempt — 2026-04-30 (partial; not finished)
+
+Set up the firewall + mock + factory-reset on 2026-04-30. Got real
+LoRa-side progress, blocked on two fixable mock-side issues:
+
+**What worked:**
+- After factory reset, sensor `90:41:B2:2E:9A:53` started broadcasting,
+  bridge picked it up cleanly (RSSI -60 dBm, SNR 9 dB, channel 7).
+- Bridge pushed `discoveryResult` events to mock every ~30 s:
+  ```
+  RX discoveryResult pay={"adopted":false,
+                          "mac":"90:41:B2:2E:9A:53",
+                          "signal":{"rssi":-60,"snr":9},
+                          "ssid":44692}
+  ```
+- Mock's `on_discoveryResult` handler fired and called
+  `send_addDevice(persistent_key)` correctly.
+
+**What broke:**
+- Mock's `addDevice` request used `await self.request(...)` with the
+  default 30 s timeout. Bridge took >60 s to respond (presumably busy
+  retrying with the sensor) and the mock's request raised
+  `TimeoutError` before the response arrived. Mock's exception handler
+  reset `sensor.state = "DISCOVERED"`, so the next `discoveryResult`
+  retried — but bridge then started returning `{"error":"Duplicate
+  device", ...}` because the device WAS partially registered from the
+  earlier (timed-out-but-still-completing) request.
+- The 20-min blackhole watchdog fired mid-test and let the real UniFi
+  controller reconnect. UniFi kept bouncing off "Client already
+  connected" because mock had the clientID, but its connection thrash
+  may have contaminated the bridge's per-device state too.
+
+**Fixes for Phase 2 retry:**
+1. **Bump mock's addDevice timeout to 90 s** (or use `fire_and_forget`
+   like sendMessage). The captured Y3 trace showed UniFi waited ~80 s
+   for the addDevice response, so 30 s was always wrong here.
+2. **Make the blackhole watchdog 60 min** (or skip the auto-restore and
+   manually clean up). Phase 2 needs an uninterrupted window to walk
+   the full 5-message pair sequence.
+3. **Restart lorabrd between attempts** — the bridge holds per-device
+   state across mock retries, and "Duplicate device" can poison
+   subsequent attempts if the previous addDevice was only partially
+   acked.
+4. Consider also: the mock currently issues the 3-burst
+   `sendMessage`s immediately after `addDevice`. If addDevice takes
+   90 s, that's 90 s the sensor is waiting for the burst. The Y3
+   capture's NN counter starts at `0x9a` — but with delays, NN may
+   need to be derived dynamically from the sensor's actual UL counter
+   (which we'd see once we get past addDevice).
+
 ## Phase 3 — ACTIVE confirmation
 
 Pass criteria:
