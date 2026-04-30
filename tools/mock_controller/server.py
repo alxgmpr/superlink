@@ -426,7 +426,11 @@ class MockController:
         params: dict[str, Any] = {"mac": sensor.mac_no_colons, "key": key}
         if fallback:
             params["fallbackKey"] = fallback
-        await self.request(ws, "addDevice", params)
+        # Y3 capture: real UniFi waited ~80s for the bridge to ack addDevice
+        # while the bridge negotiates with the sensor. The default 30s here
+        # raised TimeoutError mid-flight on 2026-04-30 and the partial
+        # registration poisoned subsequent retries with "Duplicate device".
+        await self.request(ws, "addDevice", params, timeout=90.0)
 
     async def send_sendMessage_data(self, ws, sensor: Sensor, data_hex: str) -> str:
         """Push raw DL bytes via fire-and-forget sendMessage."""
