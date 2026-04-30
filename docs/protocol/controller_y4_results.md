@@ -22,8 +22,9 @@ carries the next round's expected PT.
 | Crypto chain (X25519 + BLAKE2b + secretbox) | ✅ verified — bridge's `secretbox_open` returns rc=0 |
 | `authorize.secret` content validation | ✅ **passes naturally** — mock self-rotates AUTH_TOKEN from authorize-response `secret` field |
 | **Phase 1 idle test (mock as sole controller)** | ✅ **3-min hold confirmed** |
-| Phase 2 pair test (factory-reset sensor) | 🟡 ready to attempt |
-| Phase 3 ACTIVE confirmation | 🟡 blocked on Phase 2 |
+| **Phase 2 pair test — bridge side** | ✅ **`adopted=true`, networkId=1167** |
+| **Phase 2 pair test — sensor side** | ❌ **stays at red LED, no telemetry** |
+| Phase 3 ACTIVE confirmation | ❌ **blocked: replay grant insufficient** |
 
 ## How the bootstrap works (revised — 2026-04-30 final)
 
@@ -405,7 +406,102 @@ challenge every ~34 s. In that case we go to Phase Y5 (compute our
 own grant by ECDH against the sensor's static pubkey, which we'd
 need to recover separately).
 
-### Phase 2 attempt — 2026-04-30 (partial; not finished)
+### Phase 2 retry — 2026-04-30 (full sequence ran end-to-end; sensor refused operational mode)
+
+After the partial attempt below, applied two `fire_and_forget` fixes
+to the mock and walked the full Y3 sequence cleanly. **Bridge adopted
+the sensor; the sensor itself did not transition to operational mode.**
+
+**Code changes (this branch):**
+- `05f09b4` — `send_addDevice` now `fire_and_forget`. Bridge waits for
+  the LoRa session-key handshake with the sensor (~90 s) before
+  responding to addDevice; awaiting the response either races a 90 s
+  timeout or serialises the burst behind a useless ack.
+- `5b98064` — `removeDevice` in `on_grant_ack` also `fire_and_forget`.
+  Same wire-shape problem as addDevice: bridge processes Remove
+  instantly (visible in syslog) but the JSON-RPC response is missing
+  / delayed; the previous 30 s `await` raised `TimeoutError`,
+  cancelled the receiver task, and the WS closed before the rotated
+  addDevice + post-rotation burst could fire.
+
+**What ran end-to-end (try 4 / mock4):**
+
+| time      | wire event                                                       |
+|-----------|------------------------------------------------------------------|
+| 11:15:58  | TX 3-burst `099a / 0b9b11010d14 / 029c…<grant>…`                 |
+| 11:16:08  | RX `messageReceived` `0a 9a` (sensor 0x44 management UL, 78 B)   |
+| 11:16:08  | TX management replies `0e9d0d00012c / 0b9e11010d14`              |
+| 11:16:12  | RX `messageReceived` `03 9c …` (66-B grant ACK from sensor)      |
+| 11:16:12  | TX `removeDevice` + rotated `addDevice` (`aed56bd5…/a42b0887…`)  |
+| 11:16:12  | TX post-rotation burst `099f / 0ba011010d14 / 09a1`              |
+| 11:16:16  | RX `discoveryResult adopted=true networkId=1167 rssi=-64`        |
+| 11:16:46+ | further `discoveryResult adopted=true` every 30 s (live RSSI)    |
+| —         | **NO `0x0c` telemetry**, including across multiple sensor open/close cycles |
+
+**Sensor LED**: still red after every step, including after the user
+exercised the reed switch (open/close) several times. A fully-paired
+sensor should generate `0x0c` telemetry on each contact change and
+the LED should not be red.
+
+**Diagnosis — replay-grant is insufficient at the sensor layer.**
+
+The 0x03 grant ACK is necessary but not sufficient for adoption. The
+sensor decrypts the replayed `0x74` grant payload and emits a 66-B
+ACK (which we observed across both successful tries: try-2 and try-4
+sent identical grant bodies, sensor returned ACKs with different
+trailing bytes — proving fresh per-session derivation on the sensor
+side). The bridge interprets that ACK as enough to flip its own
+record to `adopted=true`. But the sensor's internal "operational"
+flag has a stricter check, almost certainly tied to freshness fields
+embedded in the grant's authenticated payload (session-id /
+ephemeral-pubkey / counter the sensor expects to match its current
+session, not the captured Y3 one).
+
+This matches the Y3-doc warning verbatim, just at a stage one level
+deeper than predicted:
+
+> Will the sensor accept a replayed grant? … If the sensor enforces
+> freshness on the encrypted payload (e.g. session-id or timestamp
+> inside the 16 B plaintext), replay fails and we'll see the sensor
+> silently retry the 0x43 challenge instead of moving to the 0x03
+> grant ACK.
+
+The actual fail mode is subtler: sensor advances through the LoRa
+crypto layer (sends 0x03 ACK), but quietly stalls at the application
+adoption layer (no 0x0c, red LED). From the controller's vantage you
+can't tell the difference without observing the sensor — which is
+why the LED is the source of truth.
+
+**Phase 2 outcome classification (against the original deliverable
+options):**
+
+- **Option (a)** — full PASS — *not met*. ACTIVE-state telemetry never
+  flowed and the sensor LED never reached its paired colour.
+- **Option (b)** — replay-grant fails / pivot to Phase Y5 — *yes,
+  with a refinement*. The sensor accepts the grant cryptographically
+  enough to ACK, but does NOT accept it as a valid adoption credential.
+  Pivot is justified.
+- **Option (c)** — fail in some other way — *no*; we have a clean
+  diagnostic story.
+
+**Decision: pivot to Phase Y5.** The captured Y3 grant body is not
+replayable for adoption purposes. We need to compute a fresh grant
+in real time, which requires:
+
+1. The sensor's static Curve25519 pubkey (extractable from the FCC
+   firmware dump, or from a sensor flash dump if accessible).
+2. Generate an ephemeral controller keypair, ECDH against sensor
+   pubkey to derive a fresh session secret.
+3. Encrypt the 16-byte adoption payload (whatever sensor-side state
+   it actually checks for freshness) under that fresh secret.
+4. Wrap as the `0x74` outer grant frame and send via `sendMessage`.
+
+The non-Y5 work in this branch (mock controller, framing, bridge
+pair flow, fire-and-forget plumbing) remains valuable as the
+controller-side scaffolding for Y5: only the grant body itself needs
+replacement.
+
+### Phase 2 attempt #1 — 2026-04-30 (partial; not finished)
 
 Set up the firewall + mock + factory-reset on 2026-04-30. Got real
 LoRa-side progress, blocked on two fixable mock-side issues:
@@ -467,4 +563,20 @@ Pass criteria:
 
 ## Deviations from Y3 to record
 
-(To be filled in after the live tests.)
+- **`addDevice` shape**: real UniFi appears to wait for the bridge's
+  delayed JSON-RPC ack (~90 s), but functionally the bridge starts
+  session establishment with the sensor on receipt — no need for the
+  controller to block. Fire-and-forget is the simpler shape and matches
+  what the bridge actually does. (commit `05f09b4`)
+- **`removeDevice` shape**: same. Bridge processes Remove instantly
+  (syslog: `LoRa device [...] Remove`) but the JSON-RPC response we
+  saw arrive ~5 s late or not at all. Fire-and-forget. (commit `5b98064`)
+- **Y3 `discoveryResult adopted=true` came AFTER full rotation burst,
+  not after first 0x03 grant ACK.** In try-3 (rotation never sent due
+  to removeDevice timeout) the bridge took ~3 minutes to flip to
+  `adopted=true`; in try-4 (rotation sent) it took 4 seconds. The
+  rotation step appears to be the bridge-side adoption trigger.
+- **Y3 had implicit telemetry in the captured trace.** Our replay
+  produces zero `0x0c` UL even after the bridge says adopted. Confirms
+  Y3-grant-body replay is not equivalent to a fresh adoption — the
+  sensor distinguishes.
