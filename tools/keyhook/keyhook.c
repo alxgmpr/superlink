@@ -10,7 +10,10 @@
  *     (i.e. the keypair+0x30 context vector and arg3 trailer).
  *
  * Build:
- *   arm-linux-gnueabihf-gcc -shared -fPIC -o keyhook.so keyhook.c
+ *   arm-linux-gnueabihf-gcc -DKEYHOOK_QUIET=1 -shared -fPIC -o keyhook.so keyhook.c
+ *
+ * KEYHOOK_QUIET=1 is REQUIRED — without it the memcpy/send/recv hooks
+ * compile in and the binary crashes early in lorabrd startup.
  *
  * Usage:
  *   LD_PRELOAD=/tmp/keyhook.so /usr/sbin/lorabrd --syslog ...

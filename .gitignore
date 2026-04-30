@@ -50,6 +50,11 @@ tools/keyhook/gdbserver-armhf
 tools/keyhook/gdb-libs/
 tools/keyhook/bridge-certs.tar.gz
 
+# Keyhook build artifacts (cross-compiled, reproducible via capture_key.sh)
+tools/keyhook/keyhook.so
+tools/keyhook/keyhook.so.bak
+tools/keyhook/keyhook_quiet.so
+
 # Python caches
 __pycache__/
 *.pyc

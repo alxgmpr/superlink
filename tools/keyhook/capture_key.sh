@@ -28,7 +28,8 @@ echo
 
 # Step 1: Cross-compile
 echo "[1/5] Cross-compiling keyhook.so for armv7l..."
-arm-linux-gnueabihf-gcc -shared -fPIC -o "$SCRIPT_DIR/keyhook.so" "$SCRIPT_DIR/keyhook.c"
+# QUIET=1 disables the memcpy/send/recv hooks; without it the binary SIGSEGVs on lorabrd startup
+arm-linux-gnueabihf-gcc -DKEYHOOK_QUIET=1 -shared -fPIC -o "$SCRIPT_DIR/keyhook.so" "$SCRIPT_DIR/keyhook.c"
 echo "  Built keyhook.so ($(wc -c < "$SCRIPT_DIR/keyhook.so") bytes)"
 
 # Step 2: Deploy to gateway
