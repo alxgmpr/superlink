@@ -6,16 +6,12 @@ using our mock controller, replaying the captured Y3 script.
 
 ## Status
 
-**Implementation complete, framing verified live, crypto chain
-confirmed correct, but Phase 1 blocked on per-connection EXPECTED
-selection.** The bridge runs `crypto_secretbox_open_easy` over the
-base64-decoded secret with key/nonce we now correctly derive — the
-PT decodes cleanly. The remaining blocker is that the bridge's
-`memcmp` target (`[auth_state+0x48]`) holds different bytes for
-different connection origins: the real UniFi controller from
-`10.1.1.1` gets `EXPECTED=3c232e92…`, the mock from `10.1.1.68`
-gets `EXPECTED=1315740706…`, all in the same lorabrd process for the
-same clientID. We don't yet know what selects the value.
+**Phase 1 idle test PASSED 2026-04-30** — mock authorizes naturally
+(memcmp rc=0, no bypass), bootstraps fully, holds the connection
+stable for 3+ minutes. The y4 doc's "EXPECTED varies per connection"
+claim was wrong: EXPECTED IS persistent per-clientID; the protocol
+is a self-bootstrapping rotation chain where each authorize response
+carries the next round's expected PT.
 
 | step | status |
 |---|---|
@@ -23,11 +19,67 @@ same clientID. We don't yet know what selects the value.
 | 16-bit BE framing fix | ✅ verified live (TLS+WS+UBNT round-trip OK) |
 | Unit tests for framing + state machine | ✅ 15 passing |
 | `bridgeInfoGet` / `keyExchange` round-trip | ✅ live, response shape matches Y3 |
-| Crypto chain (X25519 + BLAKE2b + secretbox) | ✅ verified — bridge's `secretbox_open` returns rc=0 with our ciphertext |
-| `authorize.secret` content validation | ❌ blocked — bridge expects per-connection EXPECTED we can't derive |
-| Phase 1 idle test (mock as sole controller) | 🟡 blocked on authorize |
-| Phase 2 pair test (factory-reset sensor) | 🟡 blocked on Phase 1 |
+| Crypto chain (X25519 + BLAKE2b + secretbox) | ✅ verified — bridge's `secretbox_open` returns rc=0 |
+| `authorize.secret` content validation | ✅ **passes naturally** — mock self-rotates AUTH_TOKEN from authorize-response `secret` field |
+| **Phase 1 idle test (mock as sole controller)** | ✅ **3-min hold confirmed** |
+| Phase 2 pair test (factory-reset sensor) | 🟡 ready to attempt |
 | Phase 3 ACTIVE confirmation | 🟡 blocked on Phase 2 |
+
+## How the bootstrap works (revised — 2026-04-30 final)
+
+The protocol is a **self-bootstrapping rotation chain**:
+
+1. Bridge stores a 32-byte `EXPECTED` in `auth_state[+0x48]` for each
+   adopted controller. Persistent per-clientID.
+2. On every controller authorize:
+   - Controller sends `secretbox(AUTH_TOKEN, ZEROS+"UBNU", session_key)`
+   - Bridge decrypts, memcmps PT against `EXPECTED`. Equal → success.
+   - Bridge encrypts `EXPECTED` itself with `ZEROS+"UBNV"` (note the V,
+     not U) using the SAME `session_key` and ships it back in the
+     authorize response payload as
+     `{"iface":"radio0","secret":"<base64>"}`.
+3. Controller decrypts that `secret` field with `session_key+UBNV` →
+   recovers `EXPECTED` → stores it as `AUTH_TOKEN` for the next session.
+
+The PT in step 2's UBNU encryption and the PT in step 2's UBNV
+encryption are the **same 32 bytes** (`EXPECTED`). Same key, two
+different nonces, same data — that's the whole rotation. There's no
+separate "next" value; the response simply hands the controller the
+ciphertext-with-different-nonce of the same secret it already accepted,
+which is enough proof for the controller to recover and reuse it.
+
+For an open-gateway implementation, the mock just needs to:
+- Decrypt the `secret` field of every authorize response → store as
+  `AUTH_TOKEN` for the next reconnect (`bootstrap()` in
+  `tools/mock_controller/server.py`).
+- For first-ever connection (no stored token): use a known-correct
+  initial value, OR use `KEYHOOK_BYPASS_AUTH=1` on the bridge to let
+  the first authorize through and capture the value from the response.
+
+Verified live 2026-04-30:
+- With AUTH_TOKEN = `1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae`
+  (captured from a previous bypass session), mock authorize returns
+  `errorCode=0` and the bridge's keyhook memcmp event shows
+  `A == B == 1315…, RC=0`. Bootstrap completes; 3-min idle hold OK.
+
+## Why the earlier "per-connection variance" interpretation was wrong
+
+Captures showed two different EXPECTED values across captures
+(`3c232e92…` and `1315740706…`). The 2026-04-30 session conflated
+this with "per-connection variability". Correct interpretation:
+
+- A given clientID has ONE `EXPECTED` at any moment.
+- Different captures showed different values because the value had
+  ROTATED between captures — each successful authorize advances the
+  chain (real controller had been authorizing for a while; the bridge's
+  current `EXPECTED` was whatever the last successful round set it to).
+- The mock's hardcoded `3c232e92…` was a stale capture from before a
+  rotation, which is why it failed against `1315…` later.
+
+The real controller never seemed to "rotate" because it always knew
+the current value (it kept up with the chain naturally). The mock fell
+behind because it had no state-persistence — every restart wiped
+its captured token.
 
 ## Y4 findings (revised 2026-04-30) — crypto chain confirmed, EXPECTED is per-CONNECTION
 

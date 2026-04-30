@@ -170,23 +170,26 @@ class MockController:
         "69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07"
     )
     # AUTH_TOKEN is the plaintext that gets encrypted into authorize.secret.
-    # 2026-04-30 finding: the bridge's stored EXPECTED is per-CONNECTION, not
-    # per-clientID — even with identical clientID, identical client cert, and
-    # identical lorabrd PID, the bridge's [auth_state+0x48] memcmp target
-    # differs based on something about the incoming connection (source IP?
-    # SSL session id? connection counter?). See
-    # docs/protocol/controller_y4_results.md for the full analysis.
+    # The protocol is a self-rotating chain: every successful authorize, the
+    # bridge ships the NEXT round's expected PT encrypted in the response's
+    # `secret` field (NONCE_tail "UBNV" instead of "UBNU"). The mock decrypts
+    # it (see bootstrap()) and stores it as the new AUTH_TOKEN for the next
+    # connect.
     #
-    # The value below is what the real UniFi controller sends (and what the
-    # bridge expects when the real controller connects from 10.1.1.1). It is
-    # NOT a fixed protocol constant — for connections from other origins the
-    # bridge expects a different value we don't yet know how to derive.
+    # The value below is the most recent one we know works. If it goes stale
+    # (e.g. between sessions while mock isn't running), the next authorize
+    # will fail with errorCode 4 — but if KEYHOOK_BYPASS_AUTH=1 is set on the
+    # bridge's lorabrd, the bypass lets the first authorize through and we
+    # capture a fresh token from the response for the next reconnect.
     AUTH_TOKEN = bytes.fromhex(
-        "3c232e926c94efc66099574fa66ac41cb414971d0f0d744b29f1e2b21ea61f50"
+        "1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae"
     )
     # 24-byte nonce: 20 zero bytes + ASCII "UBNU". Same nonce as the
     # documented connection-challenge crypto in crypto_keys_captured.md.
     AUTHORIZE_NONCE = b"\x00" * 20 + b"UBNU"
+    # Same key, different nonce: bridge encrypts the next-session EXPECTED with
+    # this and ships it in the authorize response's `secret` field.
+    NEXT_TOKEN_NONCE = b"\x00" * 20 + b"UBNV"
 
     def __init__(
         self,
@@ -346,9 +349,35 @@ class MockController:
             secret_blob.hex(), self.AUTH_TOKEN.hex(),
         )
 
-        await self.request(
+        _, auth_resp = await self.request(
             ws, "authorize", {"clientID": self.CLIENT_ID, "secret": secret}
         )
+
+        # The bridge ships the NEXT-session AUTH_TOKEN encrypted in the
+        # authorize response payload as
+        #   {"iface":"radio0","secret":base64(secretbox(NEXT_AUTH_TOKEN,
+        #                                              ZEROS+"UBNV",
+        #                                              session_key))}
+        # We decrypt it and stash for the next reconnect — that's how the
+        # protocol bootstraps without a hardcoded shared secret. Verified
+        # live: NEXT_AUTH_TOKEN equals the value the bridge memcmp's against
+        # next time, so reconnecting with this PT authorizes naturally.
+        next_b64 = auth_resp.get("secret")
+        if next_b64:
+            try:
+                next_ct = base64.b64decode(next_b64)
+                next_pt = pysodium.crypto_secretbox_open(
+                    next_ct, self.NEXT_TOKEN_NONCE, secretbox_key
+                )
+                if len(next_pt) == 32:
+                    log.info("captured NEXT_AUTH_TOKEN: %s", next_pt.hex())
+                    self.__class__.AUTH_TOKEN = next_pt
+                else:
+                    log.warning("next-token PT wrong size: %d", len(next_pt))
+            except Exception as e:
+                log.warning("failed to decrypt authorize response secret: %s", e)
+        else:
+            log.debug("authorize response had no `secret` field")
 
         await self.request(ws, "discoveryStart", {})
         log.info("✓ bootstrap complete; awaiting bridge events")
