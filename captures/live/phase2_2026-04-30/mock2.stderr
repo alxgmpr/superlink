@@ -1,0 +1,106 @@
+10:47:00.604 WARNING ACTIVE mode — make sure the real UniFi controller cannot reach this bridge during the test. Block 10.1.1.1 at the bridge or run on an isolated LAN.
+10:47:00.604 DEBUG Using selector: KqueueSelector
+10:47:00.613 INFO presenting client cert tools/mock_controller/bridge_certs/lorabr.cert
+10:47:00.613 INFO connecting to wss://10.1.1.141:8571/
+10:47:00.619 DEBUG = connection is CONNECTING
+10:47:00.677 DEBUG > GET / HTTP/1.1
+10:47:00.677 DEBUG > Host: 10.1.1.141:8571
+10:47:00.677 DEBUG > Upgrade: websocket
+10:47:00.677 DEBUG > Connection: Upgrade
+10:47:00.677 DEBUG > Sec-WebSocket-Key: 7X7is4nIj7zKudWuUZIxcA==
+10:47:00.677 DEBUG > Sec-WebSocket-Version: 13
+10:47:00.677 DEBUG > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+10:47:00.677 DEBUG > Sec-WebSocket-Protocol: ucp4
+10:47:00.677 DEBUG > User-Agent: Python/3.14 websockets/16.0
+10:47:00.689 DEBUG < HTTP/1.1 101 Switching Protocols
+10:47:00.689 DEBUG < Connection: Upgrade
+10:47:00.689 DEBUG < Sec-WebSocket-Accept: +IdY79EyNtwhcyVdmIUpUZT5nB4=
+10:47:00.689 DEBUG < Sec-WebSocket-Protocol: ucp4
+10:47:00.689 DEBUG < Server: UBNT-WS
+10:47:00.689 DEBUG < Upgrade: websocket
+10:47:00.689 DEBUG = connection is OPEN
+10:47:00.689 INFO connected; running active loop
+10:47:00.689 DEBUG > BINARY 01 01 00 00 00 00 00 71 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [131 bytes]
+10:47:00.690 INFO TX bridgeInfoGet    id=5c24ea46 pay={}
+10:47:00.690 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 22 31 2e 31 2e 30 22 7d [413 bytes]
+10:47:00.691 INFO RX response         id=5c24ea46 pay={"defaultIface":"radio0","id":"8dccbbb6-367f-4098-8c7a-e214b674fb6f","ifaces":{"radio0":{"caps":{"maxDataLen":241,"spectralScan":true},"driver":"sx1302","isRead
+10:47:00.691 INFO bridge_id=8dccbbb6-367f-4098-8c7a-e214b674fb6f radio_ready=True
+10:47:00.703 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 30 30 62 63 32 61 22 7d [201 bytes]
+10:47:00.703 INFO TX keyExchange      id=17de418e pay={"key":"bbf8368e675b030720401d028dc9a87392961a76c3bc5656396a9be4b000bc2a"}
+10:47:00.706 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 31 45 46 30 37 38 22 7d [204 bytes]
+10:47:00.706 INFO RX response         id=17de418e pay={"key":"3B6D86693D0469D97A6898E4B0651A2D6EE52CD28528A482452519DF4B1EF078"}
+10:47:00.706 DEBUG authorize crypto:
+  ctl_priv = a66f4c9267d3e57c1feabab0c79602987140cc58d446dfcc65383d89cdf0847d
+  ctl_pub  = bbf8368e675b030720401d028dc9a87392961a76c3bc5656396a9be4b000bc2a
+  br_pub   = 3b6d86693d0469d97a6898e4b0651a2d6ee52cd28528a482452519df4b1ef078
+  shared   = 56ef0718c7d2275519910cee5d4ae9c6c59f47051fba3519d56599f622b2c018
+  kdf_in   = 56ef0718c7d2275519910cee5d4ae9c6c59f47051fba3519d56599f622b2c018bbf8368e675b030720401d028dc9a87392961a76c3bc5656396a9be4b000bc2a3b6d86693d0469d97a6898e4b0651a2d6ee52cd28528a482452519df4b1ef07869b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07
+  key      = e97a2f3cbaf7922e91313c17d71c4248dcfb2763f03a4385eb1a296b2a7c0f1e
+  ct       = 850193432bbab565813bd573143e383ba4bba524a7491b5c09ba37479a959700ffe31a234860b71f4fe16efdc38acc4e
+  pt       = 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:47:00.707 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 33 44 69 73 78 4f 22 7d [252 bytes]
+10:47:00.707 INFO TX authorize        id=f6990457 pay={"clientID":"652ee9b0-8ea3-41a9-8589-b601159ea6b6","secret":"hQGTQyu6tWWBO9VzFD44O6S7pSSnSRtcCbo3R5qVlwD/4xojSGC3H0/hbv3DisxO"}
+10:47:00.710 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 43 5a 54 7a 72 2f 22 7d [224 bytes]
+10:47:00.711 INFO RX response         id=f6990457 pay={"iface":"radio0","secret":"apqw+le0K15o4QJ4dE95AzxvW4SC3NOTz1W4IBDoZNZIaDeefK7n0AO7NqCZTzr/"}
+10:47:00.711 INFO captured NEXT_AUTH_TOKEN: 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:47:00.711 DEBUG > BINARY 01 01 00 00 00 00 00 72 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:00.711 INFO TX discoveryStart   id=62b9f5dd pay={}
+10:47:00.712 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:00.712 INFO RX response         id=62b9f5dd pay={}
+10:47:00.712 INFO ✓ bootstrap complete; awaiting bridge events
+10:47:07.066 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 62 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:47:07.067 INFO RX discoveryResult  id=b3ea89f0 pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-56,"snr":8},"ssid":44692}
+10:47:07.067 INFO starting pair for sensor 9041b22e9a53
+10:47:07.067 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 62 64 33 38 64 62 22 7d [220 bytes]
+10:47:07.067 INFO TX addDevice        id=f78170a7 pay={"mac":"9041B22E9A53","key":"c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+10:47:07.067 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [203 bytes]
+10:47:07.067 INFO TX sendMessage      id=99dc6eaf pay={"mac":"9041B22E9A53","data":"099a","duty":true,"ack":true,"timeout":900000}
+10:47:07.067 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+10:47:07.068 INFO TX sendMessage      id=fb317eb9 pay={"mac":"9041B22E9A53","data":"0b9b11010d14","duty":true,"ack":true,"timeout":900000}
+10:47:07.068 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [339 bytes]
+10:47:07.068 INFO TX sendMessage      id=7e724f92 pay={"mac":"9041B22E9A53","data":"029c4b144c10e0703533e445b8cbeffc3d98704bbc873ba68b13a86269b7b2cd4378cf15f1b061326f8e2c5ed91dc3b54e147696679e968d7d136df7561f02989b
+10:47:07.069 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:07.069 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 31 ... 78 22 3a 31 30 30 7d 7d [166 bytes]
+10:47:07.070 INFO RX response         id=f78170a7 pay={}
+10:47:07.070 INFO RX devsInfoChanged  id=146345c8 pay={"capacity":{"available":99,"max":100}}
+10:47:07.070 DEBUG devsInfoChanged: {'capacity': {'available': 99, 'max': 100}}
+10:47:20.691 DEBUG > PING b9 30 50 1a [binary, 4 bytes]
+10:47:20.691 DEBUG % sent keepalive ping
+10:47:20.692 DEBUG < PONG b9 30 50 1a [binary, 4 bytes]
+10:47:20.692 DEBUG % received keepalive pong
+10:47:22.470 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:22.470 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 62 ... 73 6e 72 22 3a 39 7d 7d [350 bytes]
+10:47:22.471 INFO RX response         id=99dc6eaf pay={}
+10:47:22.471 INFO RX messageReceived  id=b17ad649 pay={"data":"0A9AAE940001000100010CB24D9D0452B4BA379A5749018003AB8809AC01FB03080F110E01010402010311010A0D01020E01012001011202061301040301041401011501011601010F01011
+10:47:22.471 INFO UL 9041b22e9a53 inner=0x0a len=78
+10:47:22.471 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+10:47:22.472 INFO TX sendMessage      id=93d4a5da pay={"mac":"9041B22E9A53","data":"0e9d0d00012c","duty":true,"ack":true,"timeout":900000}
+10:47:22.472 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+10:47:22.472 INFO TX sendMessage      id=ed54f724 pay={"mac":"9041B22E9A53","data":"0b9e11010d14","duty":true,"ack":true,"timeout":900000}
+10:47:23.725 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:23.726 INFO RX response         id=fb317eb9 pay={}
+10:47:26.094 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:26.094 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 38 ... 73 6e 72 22 3a 39 7d 7d [326 bytes]
+10:47:26.094 INFO RX response         id=7e724f92 pay={}
+10:47:26.095 INFO RX messageReceived  id=8d85aef9 pay={"data":"039C8B678F766FEA7B21E7069BA34F117373848F2E486509B00D5219961458E2243B72873C4C3651E995780EDD993F6AF2B376A4560FB9AB78A9A56AC3AA9A0A1314","mac":"90:41:B2:2
+10:47:26.095 INFO UL 9041b22e9a53 inner=0x03 len=66
+10:47:26.095 INFO grant acknowledged by 9041B22E9A53; rotating key
+10:47:26.095 DEBUG > BINARY 01 01 00 00 00 00 00 70 7b 22 61 63 74 69 6f 6e ... 32 45 39 41 35 33 22 7d [150 bytes]
+10:47:26.096 INFO TX removeDevice     id=aad1f75b pay={"mac":"9041B22E9A53"}
+10:47:26.097 DEBUG < BINARY 01 01 00 00 00 00 00 99 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [171 bytes]
+10:47:26.097 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:47:26.097 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 33 ... 78 22 3a 31 30 30 7d 7d [167 bytes]
+10:47:27.535 DEBUG < BINARY 01 01 00 00 00 00 00 99 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [171 bytes]
+10:47:30.225 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 38 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:47:40.692 DEBUG > PING a4 59 8b e4 [binary, 4 bytes]
+10:47:40.692 DEBUG % sent keepalive ping
+10:47:40.693 DEBUG < PONG a4 59 8b e4 [binary, 4 bytes]
+10:47:40.693 DEBUG % received keepalive pong
+10:47:56.099 DEBUG > CLOSE 1000 (OK) [2 bytes]
+10:47:56.099 DEBUG = connection is CLOSING
+10:47:56.101 DEBUG < CLOSE 1000 (OK) [2 bytes]
+10:47:56.101 DEBUG < EOF
+10:47:56.101 DEBUG > EOF
+10:47:56.101 DEBUG = connection is CLOSED
+10:47:56.101 DEBUG x closing TCP connection
+10:47:56.101 WARNING connection error: 

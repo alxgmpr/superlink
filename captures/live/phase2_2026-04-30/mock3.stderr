@@ -1,0 +1,99 @@
+10:49:59.768 WARNING ACTIVE mode — make sure the real UniFi controller cannot reach this bridge during the test. Block 10.1.1.1 at the bridge or run on an isolated LAN.
+10:49:59.768 DEBUG Using selector: KqueueSelector
+10:49:59.776 INFO presenting client cert tools/mock_controller/bridge_certs/lorabr.cert
+10:49:59.777 INFO connecting to wss://10.1.1.141:8571/
+10:49:59.782 DEBUG = connection is CONNECTING
+10:49:59.839 DEBUG > GET / HTTP/1.1
+10:49:59.839 DEBUG > Host: 10.1.1.141:8571
+10:49:59.839 DEBUG > Upgrade: websocket
+10:49:59.839 DEBUG > Connection: Upgrade
+10:49:59.840 DEBUG > Sec-WebSocket-Key: zxPOFJ/OhpN0FHT8YYoVBA==
+10:49:59.840 DEBUG > Sec-WebSocket-Version: 13
+10:49:59.840 DEBUG > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+10:49:59.840 DEBUG > Sec-WebSocket-Protocol: ucp4
+10:49:59.840 DEBUG > User-Agent: Python/3.14 websockets/16.0
+10:49:59.852 DEBUG < HTTP/1.1 101 Switching Protocols
+10:49:59.852 DEBUG < Connection: Upgrade
+10:49:59.852 DEBUG < Sec-WebSocket-Accept: xEyTdeZh6+YrPpvDXljczypYLJE=
+10:49:59.852 DEBUG < Sec-WebSocket-Protocol: ucp4
+10:49:59.852 DEBUG < Server: UBNT-WS
+10:49:59.852 DEBUG < Upgrade: websocket
+10:49:59.852 DEBUG = connection is OPEN
+10:49:59.853 INFO connected; running active loop
+10:49:59.853 DEBUG > BINARY 01 01 00 00 00 00 00 71 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [131 bytes]
+10:49:59.853 INFO TX bridgeInfoGet    id=dc27a1c1 pay={}
+10:49:59.854 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 22 31 2e 31 2e 30 22 7d [414 bytes]
+10:49:59.854 INFO RX response         id=dc27a1c1 pay={"defaultIface":"radio0","id":"8dccbbb6-367f-4098-8c7a-e214b674fb6f","ifaces":{"radio0":{"caps":{"maxDataLen":241,"spectralScan":true},"driver":"sx1302","isRead
+10:49:59.854 INFO bridge_id=8dccbbb6-367f-4098-8c7a-e214b674fb6f radio_ready=True
+10:49:59.866 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 63 30 31 61 34 39 22 7d [201 bytes]
+10:49:59.866 INFO TX keyExchange      id=01ceb38b pay={"key":"dd1be0c3493f5ac8d4542e5408fedb76f5af35cf4189216340fc2a9c83c01a49"}
+10:49:59.869 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 33 44 39 45 33 41 22 7d [204 bytes]
+10:49:59.869 INFO RX response         id=01ceb38b pay={"key":"122484FA268699460DE9BD07F33797471A7733D98ECABB7C7D10C4BA9C3D9E3A"}
+10:49:59.869 DEBUG authorize crypto:
+  ctl_priv = ea20b8440701a42e62dbdbab49b91e437d6bd7d7973d972ab661f82aeb406f45
+  ctl_pub  = dd1be0c3493f5ac8d4542e5408fedb76f5af35cf4189216340fc2a9c83c01a49
+  br_pub   = 122484fa268699460de9bd07f33797471a7733d98ecabb7c7d10c4ba9c3d9e3a
+  shared   = a5c20ed6672737ba10500a6bc672d405de7d37eaef1b74b000d1f33e3910127f
+  kdf_in   = a5c20ed6672737ba10500a6bc672d405de7d37eaef1b74b000d1f33e3910127fdd1be0c3493f5ac8d4542e5408fedb76f5af35cf4189216340fc2a9c83c01a49122484fa268699460de9bd07f33797471a7733d98ecabb7c7d10c4ba9c3d9e3a69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07
+  key      = e331b684c634fa9c5b42a109fb06635e834ea2ea00a411ed97f8b94a61679920
+  ct       = ea9501ba3b4587e9387fa8eb06b03b626042512838ff71f3f1b98b619a99b930dba5356bc67739c45c7a452cfd1d1afa
+  pt       = 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:49:59.869 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 7a 39 48 52 72 36 22 7d [252 bytes]
+10:49:59.869 INFO TX authorize        id=0adb244a pay={"clientID":"652ee9b0-8ea3-41a9-8589-b601159ea6b6","secret":"6pUBujtFh+k4f6jrBrA7YmBCUSg4/3Hz8bmLYZqZuTDbpTVrxnc5xFx6RSz9HRr6"}
+10:49:59.873 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 68 73 4f 43 57 41 22 7d [224 bytes]
+10:49:59.873 INFO RX response         id=0adb244a pay={"iface":"radio0","secret":"9/4yXq3Jw+x+DMPWiZOIJb05kYRytwzTx6Ec0keH9BPXq2kd4VYnY+Y0HDhsOCWA"}
+10:49:59.873 INFO captured NEXT_AUTH_TOKEN: 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:49:59.873 DEBUG > BINARY 01 01 00 00 00 00 00 72 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:49:59.874 INFO TX discoveryStart   id=068e43f8 pay={}
+10:49:59.874 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:49:59.874 INFO RX response         id=068e43f8 pay={}
+10:49:59.875 INFO ✓ bootstrap complete; awaiting bridge events
+10:50:00.221 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 36 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:50:00.222 INFO RX discoveryResult  id=63bd15d7 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-52,"snr":8},"ssid":44692}
+10:50:00.222 INFO 🎉 sensor 9041b22e9a53 reached ACTIVE state
+10:50:19.855 DEBUG > PING ad a2 8c 7c [binary, 4 bytes]
+10:50:19.855 DEBUG % sent keepalive ping
+10:50:19.856 DEBUG < PONG ad a2 8c 7c [binary, 4 bytes]
+10:50:19.857 DEBUG % received keepalive pong
+10:50:30.220 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 34 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:50:30.221 INFO RX discoveryResult  id=4d7d3ea3 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-61,"snr":9},"ssid":44692}
+10:50:39.855 DEBUG > PING a7 4b 58 8b [binary, 4 bytes]
+10:50:39.855 DEBUG % sent keepalive ping
+10:50:39.856 DEBUG < PONG a7 4b 58 8b [binary, 4 bytes]
+10:50:39.856 DEBUG % received keepalive pong
+10:50:59.856 DEBUG > PING 11 5b 93 f2 [binary, 4 bytes]
+10:50:59.857 DEBUG % sent keepalive ping
+10:50:59.857 DEBUG < PONG 11 5b 93 f2 [binary, 4 bytes]
+10:50:59.858 DEBUG % received keepalive pong
+10:51:00.228 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 38 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:51:00.229 INFO RX discoveryResult  id=84466fe6 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-54,"snr":8},"ssid":44692}
+10:51:00.854 DEBUG < PING '1777567860' [text, 10 bytes]
+10:51:00.854 DEBUG > PONG '1777567860' [text, 10 bytes]
+10:51:19.858 DEBUG > PING ee 0a e5 32 [binary, 4 bytes]
+10:51:19.858 DEBUG % sent keepalive ping
+10:51:19.859 DEBUG < PONG ee 0a e5 32 [binary, 4 bytes]
+10:51:19.859 DEBUG % received keepalive pong
+10:51:30.227 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 64 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:51:30.228 INFO RX discoveryResult  id=db442843 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-61,"snr":8},"ssid":44692}
+10:51:39.859 DEBUG > PING a1 9c cf 58 [binary, 4 bytes]
+10:51:39.859 DEBUG % sent keepalive ping
+10:51:39.860 DEBUG < PONG a1 9c cf 58 [binary, 4 bytes]
+10:51:39.860 DEBUG % received keepalive pong
+10:51:59.860 DEBUG > PING 78 b1 57 1c [binary, 4 bytes]
+10:51:59.860 DEBUG % sent keepalive ping
+10:51:59.861 DEBUG < PONG 78 b1 57 1c [binary, 4 bytes]
+10:51:59.861 DEBUG % received keepalive pong
+10:52:00.225 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 65 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:52:00.227 INFO RX discoveryResult  id=eb8f853e pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-57,"snr":9},"ssid":44692}
+10:52:01.854 DEBUG < PING '1777567921' [text, 10 bytes]
+10:52:01.855 DEBUG > PONG '1777567921' [text, 10 bytes]
+10:52:19.862 DEBUG > PING '\x04pC<' [text, 4 bytes]
+10:52:19.862 DEBUG % sent keepalive ping
+10:52:19.863 DEBUG < PONG '\x04pC<' [text, 4 bytes]
+10:52:19.863 DEBUG % received keepalive pong
+10:52:30.224 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 30 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+10:52:30.226 INFO RX discoveryResult  id=056bb258 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-59,"snr":9},"ssid":44692}
+10:52:39.863 DEBUG > PING 71 c6 09 f5 [binary, 4 bytes]
+10:52:39.864 DEBUG % sent keepalive ping
+10:52:39.865 DEBUG < PONG 71 c6 09 f5 [binary, 4 bytes]
+10:52:39.865 DEBUG % received keepalive pong

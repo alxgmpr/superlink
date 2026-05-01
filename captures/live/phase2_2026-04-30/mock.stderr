@@ -1,0 +1,228 @@
+10:38:00.237 WARNING ACTIVE mode — make sure the real UniFi controller cannot reach this bridge during the test. Block 10.1.1.1 at the bridge or run on an isolated LAN.
+10:38:00.237 DEBUG Using selector: KqueueSelector
+10:38:00.246 INFO presenting client cert tools/mock_controller/bridge_certs/lorabr.cert
+10:38:00.246 INFO connecting to wss://10.1.1.141:8571/
+10:38:00.251 DEBUG = connection is CONNECTING
+10:38:00.311 DEBUG > GET / HTTP/1.1
+10:38:00.311 DEBUG > Host: 10.1.1.141:8571
+10:38:00.311 DEBUG > Upgrade: websocket
+10:38:00.311 DEBUG > Connection: Upgrade
+10:38:00.311 DEBUG > Sec-WebSocket-Key: hNeKftYNFFxzDf/iOycmmg==
+10:38:00.311 DEBUG > Sec-WebSocket-Version: 13
+10:38:00.311 DEBUG > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+10:38:00.311 DEBUG > Sec-WebSocket-Protocol: ucp4
+10:38:00.311 DEBUG > User-Agent: Python/3.14 websockets/16.0
+10:38:00.323 DEBUG < HTTP/1.1 101 Switching Protocols
+10:38:00.323 DEBUG < Connection: Upgrade
+10:38:00.323 DEBUG < Sec-WebSocket-Accept: tTdr/EjOc+0mAjYV3y5HoocrUjw=
+10:38:00.323 DEBUG < Sec-WebSocket-Protocol: ucp4
+10:38:00.323 DEBUG < Server: UBNT-WS
+10:38:00.323 DEBUG < Upgrade: websocket
+10:38:00.323 DEBUG = connection is OPEN
+10:38:00.323 INFO connected; running active loop
+10:38:00.323 DEBUG > BINARY 01 01 00 00 00 00 00 71 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [131 bytes]
+10:38:00.324 INFO TX bridgeInfoGet    id=3c62ab04 pay={}
+10:38:00.325 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 22 31 2e 31 2e 30 22 7d [413 bytes]
+10:38:00.325 INFO RX response         id=3c62ab04 pay={"defaultIface":"radio0","id":"8dccbbb6-367f-4098-8c7a-e214b674fb6f","ifaces":{"radio0":{"caps":{"maxDataLen":241,"spectralScan":true},"driver":"sx1302","isRead
+10:38:00.325 INFO bridge_id=8dccbbb6-367f-4098-8c7a-e214b674fb6f radio_ready=True
+10:38:00.394 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 32 61 34 37 32 34 22 7d [201 bytes]
+10:38:00.394 INFO TX keyExchange      id=5a47d722 pay={"key":"66b1abdd61e3baf79e97b5a5f3d0edace7a1767daf14647b6825d8a01a2a4724"}
+10:38:00.397 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 30 46 46 35 30 44 22 7d [204 bytes]
+10:38:00.397 INFO RX response         id=5a47d722 pay={"key":"A31000FE29CF043AB2933702F3EDF5FD8F98DF7C0B19CD6C7C569B05FE0FF50D"}
+10:38:00.397 DEBUG authorize crypto:
+  ctl_priv = 78b19c990857fc3dbe6673de6264268dd43148c0b15454d40df17014c103f673
+  ctl_pub  = 66b1abdd61e3baf79e97b5a5f3d0edace7a1767daf14647b6825d8a01a2a4724
+  br_pub   = a31000fe29cf043ab2933702f3edf5fd8f98df7c0b19cd6c7c569b05fe0ff50d
+  shared   = 46117bf5ed2070b1dedb32b79160313c436b53a663b7667bc1ee6fb3846a447b
+  kdf_in   = 46117bf5ed2070b1dedb32b79160313c436b53a663b7667bc1ee6fb3846a447b66b1abdd61e3baf79e97b5a5f3d0edace7a1767daf14647b6825d8a01a2a4724a31000fe29cf043ab2933702f3edf5fd8f98df7c0b19cd6c7c569b05fe0ff50d69b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07
+  key      = 129b6c01a32902d6b00324dac6823afd4f25ff3c079832efb3ea39e549ad439d
+  ct       = 616b8df70cbf075648c36d58a27b451fcf7ef9b3829ba87768b536e0071c52c84a0bc369d3b9dcc1c517fea24bd3055f
+  pt       = 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:38:00.398 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 4a 4c 30 77 56 66 22 7d [252 bytes]
+10:38:00.398 INFO TX authorize        id=82f60069 pay={"clientID":"652ee9b0-8ea3-41a9-8589-b601159ea6b6","secret":"YWuN9wy/B1ZIw21YontFH89++bOCm6h3aLU24AccUshKC8Np07ncwcUX/qJL0wVf"}
+10:38:00.401 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 6b 4d 56 58 43 6a 22 7d [224 bytes]
+10:38:00.402 INFO RX response         id=82f60069 pay={"iface":"radio0","secret":"fwKC1vnyn1xU8bkGFwa8D0L3mOc8UrpmcioJ44kUSAEEimhRkVarMpLBR6kMVXCj"}
+10:38:00.402 INFO captured NEXT_AUTH_TOKEN: 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+10:38:00.402 DEBUG > BINARY 01 01 00 00 00 00 00 72 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:38:00.402 INFO TX discoveryStart   id=9ca9feb8 pay={}
+10:38:00.403 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:38:00.403 INFO RX response         id=9ca9feb8 pay={}
+10:38:00.403 INFO ✓ bootstrap complete; awaiting bridge events
+10:38:20.325 DEBUG > PING bf 05 fd 76 [binary, 4 bytes]
+10:38:20.327 DEBUG % sent keepalive ping
+10:38:20.328 DEBUG < PONG bf 05 fd 76 [binary, 4 bytes]
+10:38:20.328 DEBUG % received keepalive pong
+10:38:40.333 DEBUG > PING d9 f6 e9 59 [binary, 4 bytes]
+10:38:40.334 DEBUG % sent keepalive ping
+10:38:40.335 DEBUG < PONG d9 f6 e9 59 [binary, 4 bytes]
+10:38:40.336 DEBUG % received keepalive pong
+10:39:00.335 DEBUG > PING 56 a3 c4 fb [binary, 4 bytes]
+10:39:00.336 DEBUG % sent keepalive ping
+10:39:00.337 DEBUG < PONG 56 a3 c4 fb [binary, 4 bytes]
+10:39:00.337 DEBUG % received keepalive pong
+10:39:01.320 DEBUG < PING '1777567141' [text, 10 bytes]
+10:39:01.321 DEBUG > PONG '1777567141' [text, 10 bytes]
+10:39:20.338 DEBUG > PING '迗q' [text, 4 bytes]
+10:39:20.339 DEBUG % sent keepalive ping
+10:39:20.340 DEBUG < PONG '迗q' [text, 4 bytes]
+10:39:20.340 DEBUG % received keepalive pong
+10:39:40.339 DEBUG > PING 87 a2 51 ab [binary, 4 bytes]
+10:39:40.339 DEBUG % sent keepalive ping
+10:39:40.340 DEBUG < PONG 87 a2 51 ab [binary, 4 bytes]
+10:39:40.340 DEBUG % received keepalive pong
+10:40:00.340 DEBUG > PING 05 4c 7e ce [binary, 4 bytes]
+10:40:00.341 DEBUG % sent keepalive ping
+10:40:00.341 DEBUG < PONG 05 4c 7e ce [binary, 4 bytes]
+10:40:00.342 DEBUG % received keepalive pong
+10:40:02.323 DEBUG < PING '1777567202' [text, 10 bytes]
+10:40:02.324 DEBUG > PONG '1777567202' [text, 10 bytes]
+10:40:20.341 DEBUG > PING d5 01 6e 91 [binary, 4 bytes]
+10:40:20.342 DEBUG % sent keepalive ping
+10:40:20.343 DEBUG < PONG d5 01 6e 91 [binary, 4 bytes]
+10:40:20.343 DEBUG % received keepalive pong
+10:40:40.342 DEBUG > PING cc cf 04 00 [binary, 4 bytes]
+10:40:40.343 DEBUG % sent keepalive ping
+10:40:40.344 DEBUG < PONG cc cf 04 00 [binary, 4 bytes]
+10:40:40.344 DEBUG % received keepalive pong
+10:41:00.344 DEBUG > PING cb 19 53 be [binary, 4 bytes]
+10:41:00.344 DEBUG % sent keepalive ping
+10:41:00.345 DEBUG < PONG cb 19 53 be [binary, 4 bytes]
+10:41:00.345 DEBUG % received keepalive pong
+10:41:03.322 DEBUG < PING '1777567263' [text, 10 bytes]
+10:41:03.322 DEBUG > PONG '1777567263' [text, 10 bytes]
+10:41:20.347 DEBUG > PING 55 73 96 b7 [binary, 4 bytes]
+10:41:20.347 DEBUG % sent keepalive ping
+10:41:20.348 DEBUG < PONG 55 73 96 b7 [binary, 4 bytes]
+10:41:20.348 DEBUG % received keepalive pong
+10:41:40.348 DEBUG > PING 3b db 2b 05 [binary, 4 bytes]
+10:41:40.348 DEBUG % sent keepalive ping
+10:41:40.349 DEBUG < PONG 3b db 2b 05 [binary, 4 bytes]
+10:41:40.349 DEBUG % received keepalive pong
+10:42:00.349 DEBUG > PING 'S\x03ۺ' [text, 4 bytes]
+10:42:00.350 DEBUG % sent keepalive ping
+10:42:00.350 DEBUG < PONG 'S\x03ۺ' [text, 4 bytes]
+10:42:00.351 DEBUG % received keepalive pong
+10:42:04.323 DEBUG < PING '1777567324' [text, 10 bytes]
+10:42:04.323 DEBUG > PONG '1777567324' [text, 10 bytes]
+10:42:20.351 DEBUG > PING a1 3a 43 fa [binary, 4 bytes]
+10:42:20.351 DEBUG % sent keepalive ping
+10:42:20.352 DEBUG < PONG a1 3a 43 fa [binary, 4 bytes]
+10:42:20.353 DEBUG % received keepalive pong
+10:42:37.055 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 62 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:42:37.059 INFO RX discoveryResult  id=bd2a7981 pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-71,"snr":9},"ssid":44692}
+10:42:37.059 INFO starting pair for sensor 9041b22e9a53
+10:42:37.059 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 62 64 33 38 64 62 22 7d [220 bytes]
+10:42:37.060 INFO TX addDevice        id=2708d7ea pay={"mac":"9041B22E9A53","key":"c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+10:42:37.062 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+10:42:37.062 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 61 ... 78 22 3a 31 30 30 7d 7d [166 bytes]
+10:42:40.352 DEBUG > PING ba 45 21 28 [binary, 4 bytes]
+10:42:40.353 DEBUG % sent keepalive ping
+10:42:40.354 DEBUG < PONG ba 45 21 28 [binary, 4 bytes]
+10:42:40.354 DEBUG % received keepalive pong
+10:43:00.354 DEBUG > PING '_!rq' [text, 4 bytes]
+10:43:00.354 DEBUG % sent keepalive ping
+10:43:00.355 DEBUG < PONG '_!rq' [text, 4 bytes]
+10:43:00.355 DEBUG % received keepalive pong
+10:43:05.324 DEBUG < PING '1777567385' [text, 10 bytes]
+10:43:05.324 DEBUG > PONG '1777567385' [text, 10 bytes]
+10:43:07.070 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 64 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:43:20.355 DEBUG > PING 01 5c 5e e4 [binary, 4 bytes]
+10:43:20.356 DEBUG % sent keepalive ping
+10:43:20.357 DEBUG < PONG 01 5c 5e e4 [binary, 4 bytes]
+10:43:20.357 DEBUG % received keepalive pong
+10:43:37.059 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 31 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:43:40.357 DEBUG > PING 9c 43 39 a7 [binary, 4 bytes]
+10:43:40.357 DEBUG % sent keepalive ping
+10:43:40.358 DEBUG < PONG 9c 43 39 a7 [binary, 4 bytes]
+10:43:40.358 DEBUG % received keepalive pong
+10:44:00.357 DEBUG > PING ca 29 7e 32 [binary, 4 bytes]
+10:44:00.358 DEBUG % sent keepalive ping
+10:44:00.358 DEBUG < PONG ca 29 7e 32 [binary, 4 bytes]
+10:44:00.359 DEBUG % received keepalive pong
+10:44:06.325 DEBUG < PING '1777567446' [text, 10 bytes]
+10:44:06.325 DEBUG > PONG '1777567446' [text, 10 bytes]
+10:44:07.056 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 66 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:44:07.061 ERROR pair kickoff failed for 9041b22e9a53: 
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/tasks.py", line 488, in wait_for
+    return await fut
+           ^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 416, in on_discoveryResult
+    await self.send_addDevice(ws, sensor, sensor.persistent_key, fallback=None)
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 433, in send_addDevice
+    await self.request(ws, "addDevice", params, timeout=90.0)
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 261, in request
+    env, pay = await asyncio.wait_for(future, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/tasks.py", line 487, in wait_for
+    async with timeouts.timeout(timeout):
+               ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/timeouts.py", line 114, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+10:44:07.065 INFO RX response         id=2708d7ea pay={}
+10:44:07.066 INFO RX devsInfoChanged  id=a77d62b5 pay={"capacity":{"available":99,"max":100}}
+10:44:07.066 DEBUG devsInfoChanged: {'capacity': {'available': 99, 'max': 100}}
+10:44:07.066 INFO RX discoveryResult  id=d5c98f0e pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-51,"snr":8},"ssid":44692}
+10:44:07.066 INFO starting pair for sensor 9041b22e9a53
+10:44:07.066 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 62 64 33 38 64 62 22 7d [220 bytes]
+10:44:07.066 INFO TX addDevice        id=0b126099 pay={"mac":"9041B22E9A53","key":"c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+10:44:07.068 DEBUG < BINARY 01 01 00 00 00 00 00 82 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [148 bytes]
+10:44:20.359 DEBUG > PING f6 71 81 b8 [binary, 4 bytes]
+10:44:20.359 DEBUG % sent keepalive ping
+10:44:20.360 DEBUG < PONG f6 71 81 b8 [binary, 4 bytes]
+10:44:20.360 DEBUG % received keepalive pong
+10:44:37.057 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 31 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:44:40.360 DEBUG > PING e4 1e 62 fb [binary, 4 bytes]
+10:44:40.361 DEBUG % sent keepalive ping
+10:44:40.361 DEBUG < PONG e4 1e 62 fb [binary, 4 bytes]
+10:44:40.362 DEBUG % received keepalive pong
+10:45:00.361 DEBUG > PING a6 0c f3 c0 [binary, 4 bytes]
+10:45:00.362 DEBUG % sent keepalive ping
+10:45:00.363 DEBUG < PONG a6 0c f3 c0 [binary, 4 bytes]
+10:45:00.363 DEBUG % received keepalive pong
+10:45:07.056 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 36 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:45:07.326 DEBUG < PING '1777567507' [text, 10 bytes]
+10:45:07.326 DEBUG > PONG '1777567507' [text, 10 bytes]
+10:45:20.364 DEBUG > PING 5f 3a e5 40 [binary, 4 bytes]
+10:45:20.364 DEBUG % sent keepalive ping
+10:45:20.365 DEBUG < PONG 5f 3a e5 40 [binary, 4 bytes]
+10:45:20.365 DEBUG % received keepalive pong
+10:45:37.060 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 34 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+10:45:37.069 ERROR pair kickoff failed for 9041b22e9a53: 
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/tasks.py", line 488, in wait_for
+    return await fut
+           ^^^^^^^^^
+asyncio.exceptions.CancelledError
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 416, in on_discoveryResult
+    await self.send_addDevice(ws, sensor, sensor.persistent_key, fallback=None)
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 433, in send_addDevice
+    await self.request(ws, "addDevice", params, timeout=90.0)
+  File "/Users/alex/superlink/.claude/worktrees/naughty-ptolemy-061b05/tools/mock_controller/server.py", line 261, in request
+    env, pay = await asyncio.wait_for(future, timeout=timeout)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/tasks.py", line 487, in wait_for
+    async with timeouts.timeout(timeout):
+               ~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.3_1/Frameworks/Python.framework/Versions/3.14/lib/python3.14/asyncio/timeouts.py", line 114, in __aexit__
+    raise TimeoutError from exc_val
+TimeoutError
+10:45:37.072 INFO RX discoveryResult  id=1ff46c7d pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-59,"snr":9},"ssid":44692}
+10:45:37.072 INFO starting pair for sensor 9041b22e9a53
+10:45:37.072 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 62 64 33 38 64 62 22 7d [220 bytes]
+10:45:37.073 INFO TX addDevice        id=ab7bb5d9 pay={"mac":"9041B22E9A53","key":"c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+10:45:37.075 DEBUG < BINARY 01 01 00 00 00 00 00 82 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [148 bytes]
+10:45:40.365 DEBUG > PING 4a c0 a1 72 [binary, 4 bytes]
+10:45:40.365 DEBUG % sent keepalive ping
+10:45:40.366 DEBUG < PONG 4a c0 a1 72 [binary, 4 bytes]
+10:45:40.366 DEBUG % received keepalive pong

@@ -44,3 +44,23 @@ Thumbs.db
 
 # Claude Code local settings
 .claude/
+
+# Cross-arch debug binaries (reproducible via apt on Pi)
+tools/keyhook/gdbserver-armhf
+tools/keyhook/gdb-libs/
+tools/keyhook/bridge-certs.tar.gz
+
+# Keyhook build artifacts (cross-compiled, reproducible via capture_key.sh)
+tools/keyhook/keyhook.so
+tools/keyhook/keyhook.so.bak
+tools/keyhook/keyhook_quiet.so
+
+# Python caches
+__pycache__/
+*.pyc
+
+# Bridge certs incl. private keys — do not distribute
+tools/mock_controller/bridge_certs/
+
+# Mock controller local debug log (captures live test output)
+captures/live/mock_controller.jsonl
