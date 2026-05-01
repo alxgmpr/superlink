@@ -25,6 +25,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools" / "mock_controller"))
 
 import server as mc  # noqa: E402
+import nacl.bindings as nacl_bindings  # noqa: E402  (used by ADOPT_REQUEST tests)
 
 
 # ---------------------------------------------------------------------------
@@ -224,12 +225,12 @@ def _make_ctl() -> mc.MockController:
     return mc.MockController(log_path=None, active=True, nn_start=0x9A)
 
 
-def test_pair_burst_replays_captured_grant():
-    """After kickoff the mock should fire 099a, 0b9b..., 029c... in order."""
+def test_pair_burst_sends_fresh_adopt_request():
+    """After kickoff the mock fires 099a, 0b9b..., then a fresh-built
+    ADOPT_REQUEST (messageId=0x02, two ephemeral pubkeys, networkId)."""
     ctl = _make_ctl()
     ws = _FakeWS(ctl)
 
-    # Trigger pair: simulate discoveryResult adopted=false from the bridge.
     asyncio.run(ctl.on_discoveryResult(
         ws, {"mac": mc.TEST_SENSOR.mac_with_colons,
              "adopted": False, "ssid": 44692,
@@ -243,19 +244,26 @@ def test_pair_burst_replays_captured_grant():
     assert actions[0][1]["key"] == mc.TEST_SENSOR.persistent_key
     assert "fallbackKey" not in actions[0][1]
 
-    # 3-burst follows: 0x53 (09 NN), 0x44 (0b NN+1 ...), 0x74 grant.
-    assert actions[1][0] == "sendMessage"
-    assert actions[1][1]["data"] == "099a"
-    assert actions[2][0] == "sendMessage"
-    assert actions[2][1]["data"] == "0b9b11010d14"
+    assert actions[1][0] == "sendMessage" and actions[1][1]["data"] == "099a"
+    assert actions[2][0] == "sendMessage" and actions[2][1]["data"] == "0b9b11010d14"
     assert actions[3][0] == "sendMessage"
-    assert actions[3][1]["data"] == mc.TEST_SENSOR.grant_data
-    # NN at position 1 of the grant body.
-    assert actions[3][1]["data"][2:4] == "9c"
+
+    grant_hex = actions[3][1]["data"]
+    grant = bytes.fromhex(grant_hex)
+    assert len(grant) == 70
+    assert grant[0] == mc.MSG_ADOPT_REQUEST  # messageId 0x02
+    assert grant[1] == 0x9C                  # messageTag = burst position 3 NN
+    assert int.from_bytes(grant[66:], "big") == mc.NETWORK_ID
 
     sensor = ctl.sensors[mc.TEST_SENSOR.mac_no_colons.lower()]
     assert sensor.state == "BURSTED"
-    # NN counter advanced 3.
+    # Ephemeral privates were stored for use in on_grant_ack.
+    assert sensor.eph_priv_r is not None and len(sensor.eph_priv_r) == 32
+    assert sensor.eph_priv_o is not None and len(sensor.eph_priv_o) == 32
+    # And the request's two pubkeys are base × those privates.
+    assert grant[2:34] == nacl_bindings.crypto_scalarmult_base(sensor.eph_priv_r)
+    assert grant[34:66] == nacl_bindings.crypto_scalarmult_base(sensor.eph_priv_o)
+
     assert ctl.dl_counter == (0x9A + 3) & 0xFF
 
 
@@ -278,32 +286,60 @@ def test_management_reply_after_0a_ul():
     assert datas == ["0e9d0d00012c", "0b9e11010d14"]
 
 
-def test_grant_ack_triggers_rotation():
-    """A messageReceived starting 0x03 in BURSTED state → removeDevice +
-    addDevice rotated + post-rotation burst."""
+def test_grant_ack_triggers_kdf_derived_rotation():
+    """A 66-byte ADOPT_RESPONSE in BURSTED state → removeDevice + addDevice
+    rotated (key/fallbackKey are kdf_E of the controller's stored ephemeral
+    privates against the sensor's two response pubkeys) + post-rotation burst.
+    """
     ctl = _make_ctl()
     ws = _FakeWS(ctl)
     sensor = ctl.sensors[mc.TEST_SENSOR.mac_no_colons.lower()]
     sensor.state = "BURSTED"
+    # Pretend send_pair_burst already ran and stored these privates.
+    sensor.eph_priv_r = bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+    )
+    sensor.eph_priv_o = bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe"
+    )
     ctl.dl_counter = 0x9F  # captured post-rotation NN
+
+    # Fabricate a sensor ADOPT_RESPONSE with arbitrary pubkeys.
+    dev_pub = bytes.fromhex(
+        "8f0f12de419e0d8db5d7abd8aab7a6b5037c0be13c984bc8c93ae75c1438a120"
+    )
+    dev_fb_pub = bytes.fromhex(
+        "ef9a96027a8b842113c6f75d7f3f6107a531275b359a2dd107478dfaac0eac06"
+    )
+    body = bytes([mc.MSG_ADOPT_RESPONSE, 0x9C]) + dev_pub + dev_fb_pub
+    assert len(body) == 66
 
     asyncio.run(ctl.on_messageReceived(
         ws, {"mac": mc.TEST_SENSOR.mac_with_colons,
-             "data": "039C8F0F12DE419E",  # truncated 0x03 grant ack
+             "data": body.hex(),
              "signal": {"rssi": -54, "snr": 8}},
     ))
+
+    expected_key      = mc.kdf_E(bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+    ), dev_pub).hex()
+    expected_fallback = mc.kdf_E(bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe"
+    ), dev_fb_pub).hex()
+
     pairs = ws.decoded_sent_pairs()
     actions = [(e["action"], p) for e, p in pairs]
-    # removeDevice → addDevice (rotated) → 09 NN → 0b NN+1 → 09 NN+2
     assert actions[0][0] == "removeDevice"
     assert actions[0][1] == {"mac": mc.TEST_SENSOR.mac_no_colons}
     assert actions[1][0] == "addDevice"
-    assert actions[1][1]["key"] == mc.TEST_SENSOR.rotated_key
-    assert actions[1][1]["fallbackKey"] == mc.TEST_SENSOR.rotated_fallback_key
+    assert actions[1][1]["key"] == expected_key
+    assert actions[1][1]["fallbackKey"] == expected_fallback
     assert actions[2][1]["data"] == "099f"
     assert actions[3][1]["data"] == "0ba011010d14"
     assert actions[4][1]["data"] == "09a1"
     assert sensor.state == "ROTATED"
+    # Privates discarded after use — must not survive into next pair attempt.
+    assert sensor.eph_priv_r is None and sensor.eph_priv_o is None
 
 
 def test_adopted_true_marks_active():

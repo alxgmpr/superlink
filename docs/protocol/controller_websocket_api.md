@@ -290,9 +290,21 @@ single bridge to pair a single sensor:
    "up".
 
 The mock does NOT need to:
-- Forge anything cryptographic — the bridge generates all session
-  crypto locally, the controller just provisions long-term secrets.
-- Understand LoRa — only JSON.
+- Forge LoRa-side session crypto — the bridge derives the LoRa session
+  key locally (BLAKE2b over its own DH with the sensor + the
+  controller-supplied `addDevice.key`), MICs and XSalsa20-encrypts
+  outgoing LoRa frames itself.
+- Understand LoRa framing — only JSON.
+
+The mock **does** need to forge the **inner Class B grant** (the 70 B
+hex blob the controller pushes via `sendMessage.data` for `0x74` DL
+replies). That body's 64-byte middle is computed by the UniFi
+controller from per-sensor state — see
+[controller_y3_findings.md](controller_y3_findings.md) and
+[../OPEN_GATEWAY_PLAN.md](../OPEN_GATEWAY_PLAN.md) Phase Y5. As of
+2026-04-30 the algorithm is unknown; the captured Y3 grant
+replays at the LoRa layer (sensor sends 0x03 ACK) but fails at the
+sensor's adoption layer (red LED, no `0x0c` telemetry).
 
 The cleanest implementation is a Python `websockets`-based server +
 a state machine that drives the pair flow. Starting point:

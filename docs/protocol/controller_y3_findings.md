@@ -23,6 +23,21 @@ findings:
 - New sensor UL inner-type `0x03` (66 bytes) discovered — the
   sensor's response to the grant.
 
+**2026-04-30 update — major correction.** The "Class B grant" framing
+in this document is wrong. The 70-byte body is plaintext
+`ADOPT_REQUEST` carrying two ephemeral X25519 pubkeys (and a
+networkId), and the 66-byte 0x03 reply is plaintext `ADOPT_RESPONSE`
+carrying the sensor's two ephemeral pubkeys. Both halves of the 64B
+middle are public keys, not `eph_pub || ciphertext`. There is no
+inner encryption to crack. See
+[`superlink_application_layer.md`](superlink_application_layer.md)
+for the corrected protocol and
+[`controller_y4_results.md`](controller_y4_results.md) "Phase Y5
+step 2" for how it was recovered. Any "encrypted Class B grant" /
+"64B grant middle is `[eph_pub LE] || [Poly1305 MAC + ct]`" claim
+later in this document predates the correction and should be read as
+a refuted hypothesis.
+
 ---
 
 ## Architectural correction (major)
@@ -450,10 +465,17 @@ The XSalsa20 nonce structure matches docs: 10-byte cleartext header
 
 ## 64B grant-middle structure (analysis result, 2026-04-29)
 
-Cross-session analysis of **8 captured grants** (7 from Apr 20-21
-pair2-pair7 captures + the Y3 Apr 29 grant) gives a strong structural
-hypothesis. Methodology: byte-stable diffing, entropy, exhaustive
-substring/XOR search against every known constant, MSB-bias test.
+> **REFUTED 2026-04-30.** This section's hypothesis (`[32B X25519 ephemeral
+> pubkey, LE] || [32B Poly1305 MAC + ciphertext]`) was wrong. The 64B
+> middle is actually `[32B gatewayPublicKey, LE] || [32B
+> gatewayFallbackPublicKey, LE]` — two raw public keys, no encryption.
+> Both halves are X25519 pubkeys, which is why MSB[31] is clear in
+> *both* of all 8 captures (the joint MSB-clear pattern wasn't
+> "u-coord + ciphertext-that-coincidentally-has-MSB-clear"; it was
+> two u-coords). See
+> [`superlink_application_layer.md`](superlink_application_layer.md)
+> for the corrected message protocol. Kept below for the analysis
+> methodology and as a record of how we got it wrong.
 
 ### Negative results (rule out trivial structures)
 - **No bytes stable across all 8 grants.** Pairwise byte-diff 62-64/64,

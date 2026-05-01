@@ -51,8 +51,79 @@ try:
 except ImportError:
     sys.exit("pip install 'websockets>=12'")
 
+import hashlib
+
+try:
+    import nacl.bindings as nacl_bindings
+except ImportError:
+    sys.exit("pip install pynacl")
+
 
 log = logging.getLogger("mock-controller")
+
+
+# ---------------------------------------------------------------------------
+# SuperLink LoRa application-layer codec.
+#
+# Recovered 2026-04-30 from static RE of UniFi Protect (UNVR fw v5.0.16,
+# webpack module 41118 = ./src/middleware/devices/loraBridges/helpers/
+# applicationLayer/messages.ts). Full reference at
+# docs/protocol/superlink_application_layer.md.
+#
+# A message on the wire is:
+#     [1B messageId] [1B messageTag] [N-byte payload]
+# ---------------------------------------------------------------------------
+
+# MessageId enum values we use.
+MSG_ADOPT_REQUEST = 0x02
+MSG_ADOPT_RESPONSE = 0x03
+
+# 32B salt baked into Protect's deviceAdopt KDF (deviceAdopt.ts).
+KDF_SALT_H = bytes.fromhex(
+    "70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59"
+)
+
+
+def kdf_E(my_priv: bytes, their_pub: bytes) -> bytes:
+    """Persistent-key KDF from Protect's deviceAdopt.ts.
+
+        E(my_priv, their_pub) = blake2b32(
+            X25519(my_priv, their_pub)
+            || base × my_priv
+            || their_pub
+            || H )
+    """
+    if len(my_priv) != 32 or len(their_pub) != 32:
+        raise ValueError("expected 32-byte priv/pub")
+    shared = nacl_bindings.crypto_scalarmult(my_priv, their_pub)
+    my_pub = nacl_bindings.crypto_scalarmult_base(my_priv)
+    return hashlib.blake2b(
+        shared + my_pub + their_pub + KDF_SALT_H, digest_size=32
+    ).digest()
+
+
+def encode_adopt_request(
+    message_tag: int,
+    gw_pub: bytes,
+    gw_fb_pub: bytes,
+    network_id: int,
+) -> bytes:
+    """Build the 70-byte ADOPT_REQUEST wire body."""
+    if len(gw_pub) != 32 or len(gw_fb_pub) != 32:
+        raise ValueError("pubkeys must be 32 bytes")
+    return (
+        bytes([MSG_ADOPT_REQUEST, message_tag & 0xFF])
+        + gw_pub
+        + gw_fb_pub
+        + network_id.to_bytes(4, "big")
+    )
+
+
+def decode_adopt_response(body: bytes) -> tuple[int, bytes, bytes]:
+    """Parse a 66-byte ADOPT_RESPONSE. Returns (messageTag, devicePub, deviceFbPub)."""
+    if len(body) < 66 or body[0] != MSG_ADOPT_RESPONSE:
+        raise ValueError(f"not an ADOPT_RESPONSE (len={len(body)}, id=0x{body[:1].hex()})")
+    return body[1], body[2:34], body[34:66]
 
 
 # ---------------------------------------------------------------------------
@@ -116,30 +187,29 @@ class Sensor:
     mac_no_colons: str            # uppercase hex, no separators
     mac_with_colons: str          # uppercase hex with colons
     persistent_key: str           # 64-hex addDevice.key for the pair-completing call
-    rotated_key: str              # 64-hex addDevice.key for the post-grant rotation
-    rotated_fallback_key: str     # 64-hex addDevice.fallbackKey for the rotation
-    grant_data: str               # captured 70-byte grant body, hex
     state: str = "DISCOVERED"     # DISCOVERED → PAIRING → BURSTED → ROTATED → ACTIVE
+    # Ephemeral X25519 privates the controller picks for this pair attempt's
+    # ADOPT_REQUEST. Set in send_pair_burst, consumed in on_grant_ack to derive
+    # the rotated addDevice.key/fallbackKey from the sensor's ADOPT_RESPONSE.
+    eph_priv_r: bytes | None = None
+    eph_priv_o: bytes | None = None
 
 
 TEST_SENSOR = Sensor(
     mac_no_colons="9041B22E9A53",
     mac_with_colons="90:41:B2:2E:9A:53",
     persistent_key="c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db",
-    rotated_key="aed56bd502cd23c3a57eb7910231f3f7ad1f6252ab2202b8532642f0cfde95d4",
-    rotated_fallback_key="a42b08870cf4cbd72ae32cb46ce662e3bb83136f95a51a08f627e1a86fae903a",
-    # 70 bytes: 02 NN <64B middle> 00 00 04 8F. NN=0x9c in the captured Y3 burst.
-    grant_data=(
-        "029c4b144c10e0703533e445b8cbeffc3d98704bbc873ba68b13a86269b7b2cd"
-        "4378cf15f1b061326f8e2c5ed91dc3b54e147696679e968d7d136df7561f0298"
-        "9b2b0000048f"
-    ),
 )
 
 
-# Default first NN matches the captured Y3 0x53 reply (099a). Aligning here
-# means the captured grant body's NN=0x9c naturally falls on the 3rd burst
-# message and we replay verbatim — no patching of the authenticated body.
+# networkId baked into ADOPT_REQUEST (= getShortConsoleId in Protect). Captured
+# value for our test bridge; controller has one of these per console.
+NETWORK_ID = 0x048F  # 1167
+
+# Default first NN. The captured Y3 0x53 reply was 099a; aligning here means
+# the third burst message (the ADOPT_REQUEST) lands on NN=0x9c which matched
+# the captured trace. NN value isn't load-bearing now that we build the
+# ADOPT_REQUEST dynamically — kept for parity with prior captures.
 DEFAULT_NN_START = 0x9A
 
 
@@ -448,28 +518,39 @@ class MockController:
         return await self.fire_and_forget(ws, "sendMessage", params)
 
     async def send_pair_burst(self, ws, sensor: Sensor) -> None:
-        """Y3 pair-completing burst: 0x53 + 0x44 + 0x74 grant.
+        """Y3 pair-completing burst: 0x53 + 0x44 + ADOPT_REQUEST.
 
-        NNs increment per message. With nn_start=0x9a (default) the grant
-        message lands on NN=0x9c, matching the captured grant body's NN
-        byte and avoiding any need to mutate the authenticated payload.
+        The third message is a freshly built `ADOPT_REQUEST` (messageId=0x02)
+        per docs/protocol/superlink_application_layer.md. We pick fresh
+        ephemeral X25519 privates `r` and `o` per pair attempt, store them
+        on the sensor for use in on_grant_ack (which derives the rotated
+        addDevice.key/fallbackKey from the sensor's ADOPT_RESPONSE).
+
+        NNs increment per message; the third message's NN becomes the
+        ADOPT_REQUEST's messageTag (echoed by the sensor in its
+        ADOPT_RESPONSE for correlation).
         """
         nn0 = self.next_nn()
         nn1 = self.next_nn()
         nn2 = self.next_nn()
 
-        grant_hex = sensor.grant_data
-        cap_nn = int(grant_hex[2:4], 16)
-        if cap_nn != nn2:
-            log.warning(
-                "grant NN mismatch: captured=0x%02x ours=0x%02x — patching position 1",
-                cap_nn, nn2,
-            )
-            grant_hex = grant_hex[:2] + f"{nn2:02x}" + grant_hex[4:]
+        # Fresh ephemeral keypair per pair attempt — DON'T reuse across
+        # retries or the rotated addDevice values won't match what the
+        # sensor derives.
+        sensor.eph_priv_r = secrets.token_bytes(32)
+        sensor.eph_priv_o = secrets.token_bytes(32)
+        gw_pub = nacl_bindings.crypto_scalarmult_base(sensor.eph_priv_r)
+        gw_fb_pub = nacl_bindings.crypto_scalarmult_base(sensor.eph_priv_o)
+
+        adopt_req = encode_adopt_request(nn2, gw_pub, gw_fb_pub, NETWORK_ID)
+        log.info(
+            "ADOPT_REQUEST tag=0x%02x gw_pub=%s gw_fb=%s networkId=0x%x",
+            nn2, gw_pub.hex(), gw_fb_pub.hex(), NETWORK_ID,
+        )
 
         await self.send_sendMessage_data(ws, sensor, f"09{nn0:02x}")
         await self.send_sendMessage_data(ws, sensor, f"0b{nn1:02x}11010d14")
-        await self.send_sendMessage_data(ws, sensor, grant_hex)
+        await self.send_sendMessage_data(ws, sensor, adopt_req.hex())
 
     async def on_messageReceived(self, ws, pay: dict) -> None:
         mac = pay.get("mac", "").replace(":", "").lower()
@@ -488,9 +569,24 @@ class MockController:
             # Sensor 0x44 management UL — controller replies with 0x4e + 0x44.
             await self.send_management_replies(ws, sensor)
         elif first == 0x03:
-            # 66B grant ack — kick off the post-grant rotation and burst.
+            # 66B ADOPT_RESPONSE — extract the sensor's two fresh ephemeral
+            # pubkeys and feed them into the rotation step.
             if sensor.state == "BURSTED":
-                await self.on_grant_ack(ws, sensor)
+                try:
+                    body = bytes.fromhex(data_hex)
+                except ValueError as exc:
+                    log.error("malformed ADOPT_RESPONSE hex: %s", exc)
+                    return
+                try:
+                    tag, dev_pub, dev_fb_pub = decode_adopt_response(body)
+                except ValueError as exc:
+                    log.error("ADOPT_RESPONSE decode: %s", exc)
+                    return
+                log.info(
+                    "ADOPT_RESPONSE tag=0x%02x devicePub=%s deviceFbPub=%s",
+                    tag, dev_pub.hex(), dev_fb_pub.hex(),
+                )
+                await self.on_grant_ack(ws, sensor, dev_pub, dev_fb_pub)
         elif first == 0x0c:
             # Telemetry from sensor in ACTIVE state. Real controller eventually
             # replies with a 0x44 management; mock keeps quiet to avoid drowning
@@ -506,17 +602,32 @@ class MockController:
         await self.send_sendMessage_data(ws, sensor, f"0e{nn0:02x}0d00012c")
         await self.send_sendMessage_data(ws, sensor, f"0b{nn1:02x}11010d14")
 
-    async def on_grant_ack(self, ws, sensor: Sensor) -> None:
-        log.info("grant acknowledged by %s; rotating key", sensor.mac_no_colons)
-        # Same timing problem as addDevice — bridge response to removeDevice
-        # didn't arrive within 30s on 2026-04-30 phase 2 retry, killing the
-        # rotation mid-flight (TimeoutError → asyncio cancelled the WS).
-        # The bridge syslog shows "Remove" handled instantly; the response
-        # is just delayed/missing on the wire. Fire-and-forget for the same
-        # reasons as send_addDevice above.
+    async def on_grant_ack(
+        self, ws, sensor: Sensor, dev_pub: bytes, dev_fb_pub: bytes,
+    ) -> None:
+        """Sensor returned ADOPT_RESPONSE — derive new persistent keys and rotate."""
+        if not sensor.eph_priv_r or not sensor.eph_priv_o:
+            log.error("on_grant_ack but no ephemeral state for %s", sensor.mac_no_colons)
+            return
+
+        # Run the persistent-key KDF on both halves (deviceAdopt.ts in Protect).
+        new_key      = kdf_E(sensor.eph_priv_r, dev_pub).hex()
+        new_fallback = kdf_E(sensor.eph_priv_o, dev_fb_pub).hex()
+        log.info(
+            "rotated keys derived: key=%s fallbackKey=%s",
+            new_key, new_fallback,
+        )
+        # Discard the ephemeral privates — they MUST NOT be reused for any
+        # future pair attempt (would defeat the per-pair-fresh property).
+        sensor.eph_priv_r = None
+        sensor.eph_priv_o = None
+
+        # Same fire-and-forget reasoning as send_addDevice — the bridge
+        # processes Remove instantly (visible in syslog) but the JSON-RPC
+        # response is delayed/missing.
         await self.fire_and_forget(ws, "removeDevice", {"mac": sensor.mac_no_colons})
         await self.send_addDevice(
-            ws, sensor, sensor.rotated_key, fallback=sensor.rotated_fallback_key
+            ws, sensor, new_key, fallback=new_fallback,
         )
         # Y3 post-rotation burst: 09 NN, 0b NN+1, 09 NN+2 (NNs 9f/a0/a1 in capture)
         nn0 = self.next_nn()
@@ -633,7 +744,8 @@ def main() -> None:
                         "mock connects passively and only logs incoming traffic.")
     p.add_argument("--nn-start", default=hex(DEFAULT_NN_START),
                    help=f"Starting NN counter (default {hex(DEFAULT_NN_START)} "
-                        "matches captured Y3 grant body NN=0x9c on burst position 3)")
+                        "matches captured Y3 trace; not load-bearing now that "
+                        "the ADOPT_REQUEST is built dynamically)")
     p.add_argument("--no-reconnect", action="store_true",
                    help="Exit after a single session instead of looping with backoff")
     p.add_argument("--verbose", "-v", action="store_true")

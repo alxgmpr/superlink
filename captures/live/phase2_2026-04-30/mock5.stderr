@@ -1,0 +1,224 @@
+20:41:59.564 WARNING ACTIVE mode — make sure the real UniFi controller cannot reach this bridge during the test. Block 10.1.1.1 at the bridge or run on an isolated LAN.
+20:41:59.564 DEBUG Using selector: KqueueSelector
+20:41:59.573 INFO presenting client cert tools/mock_controller/bridge_certs/lorabr.cert
+20:41:59.573 INFO connecting to wss://10.1.1.141:8571/
+20:41:59.578 DEBUG = connection is CONNECTING
+20:41:59.637 DEBUG > GET / HTTP/1.1
+20:41:59.638 DEBUG > Host: 10.1.1.141:8571
+20:41:59.638 DEBUG > Upgrade: websocket
+20:41:59.638 DEBUG > Connection: Upgrade
+20:41:59.638 DEBUG > Sec-WebSocket-Key: Q+WhNi1PGoyNzHbYSxRphg==
+20:41:59.638 DEBUG > Sec-WebSocket-Version: 13
+20:41:59.638 DEBUG > Sec-WebSocket-Extensions: permessage-deflate; client_max_window_bits
+20:41:59.638 DEBUG > Sec-WebSocket-Protocol: ucp4
+20:41:59.638 DEBUG > User-Agent: Python/3.14 websockets/16.0
+20:41:59.650 DEBUG < HTTP/1.1 101 Switching Protocols
+20:41:59.651 DEBUG < Connection: Upgrade
+20:41:59.651 DEBUG < Sec-WebSocket-Accept: 7a49oAQeGh9tmmCrPpgZpXs623k=
+20:41:59.651 DEBUG < Sec-WebSocket-Protocol: ucp4
+20:41:59.651 DEBUG < Server: UBNT-WS
+20:41:59.651 DEBUG < Upgrade: websocket
+20:41:59.651 DEBUG = connection is OPEN
+20:41:59.651 INFO connected; running active loop
+20:41:59.651 DEBUG > BINARY 01 01 00 00 00 00 00 71 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [131 bytes]
+20:41:59.652 INFO TX bridgeInfoGet    id=106e0c10 pay={}
+20:41:59.652 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 22 31 2e 31 2e 30 22 7d [413 bytes]
+20:41:59.653 INFO RX response         id=106e0c10 pay={"defaultIface":"radio0","id":"8dccbbb6-367f-4098-8c7a-e214b674fb6f","ifaces":{"radio0":{"caps":{"maxDataLen":241,"spectralScan":true},"driver":"sx1302","isRead
+20:41:59.653 INFO bridge_id=8dccbbb6-367f-4098-8c7a-e214b674fb6f radio_ready=True
+20:41:59.670 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 33 36 33 34 34 31 22 7d [201 bytes]
+20:41:59.671 INFO TX keyExchange      id=ed73dfad pay={"key":"62ff3a1a51a159300ee8b148927477f5f87f8c32ec22cd230abdc92a72363441"}
+20:41:59.673 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 33 43 42 39 32 32 22 7d [204 bytes]
+20:41:59.673 INFO RX response         id=ed73dfad pay={"key":"481064D3C9180D4723C42B0F9D36868159448148C948EC0462DB127A8C3CB922"}
+20:41:59.673 DEBUG authorize crypto:
+  ctl_priv = c1cd1ce5d7c79e4edf61543d5f3f5bec1d38b822b9fa1f3e50cdb3b5f95e3cb4
+  ctl_pub  = 62ff3a1a51a159300ee8b148927477f5f87f8c32ec22cd230abdc92a72363441
+  br_pub   = 481064d3c9180d4723c42b0f9d36868159448148c948ec0462db127a8c3cb922
+  shared   = 2e3498d7b4927b1a977b6ce612fb0c705f4e5f3440ecce714bebda6b31adb36e
+  kdf_in   = 2e3498d7b4927b1a977b6ce612fb0c705f4e5f3440ecce714bebda6b31adb36e62ff3a1a51a159300ee8b148927477f5f87f8c32ec22cd230abdc92a72363441481064d3c9180d4723c42b0f9d36868159448148c948ec0462db127a8c3cb92269b1d4a63a301106494473b25c23c372a1ba54fbbdbd4fd47ed638460e425f07
+  key      = 1464f3e9985332e285dbdaea41ada4077aedd39ac1f25e505d700ba2a1522e09
+  ct       = 372e84e671aa795312474b8a7a8a9b701062a9a7092d186e1fbc3cf523e34b23ad9d1372a93a153666b6a38719661556
+  pt       = 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+20:41:59.673 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 63 5a 5a 68 56 57 22 7d [252 bytes]
+20:41:59.673 INFO TX authorize        id=861a86a5 pay={"clientID":"652ee9b0-8ea3-41a9-8589-b601159ea6b6","secret":"Ny6E5nGqeVMSR0uKeoqbcBBiqacJLRhuH7w89SPjSyOtnRNyqToVNma2o4cZZhVW"}
+20:41:59.677 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 67 6b 69 51 6e 44 22 7d [224 bytes]
+20:41:59.677 INFO RX response         id=861a86a5 pay={"iface":"radio0","secret":"AbWjtEflcdDrsMavlIARihuc8jFynf5oKxOUvGtW5n+7VHt+VPZ9VE/zMngkiQnD"}
+20:41:59.677 INFO captured NEXT_AUTH_TOKEN: 1315740706b7eb7f0eb925af76a805a5c9dd6912836680acaefff77e27f8e3ae
+20:41:59.677 DEBUG > BINARY 01 01 00 00 00 00 00 72 7b 22 61 63 74 69 6f 6e ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:41:59.678 INFO TX discoveryStart   id=3f5d516d pay={}
+20:41:59.678 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:41:59.679 INFO RX response         id=3f5d516d pay={}
+20:41:59.679 INFO ✓ bootstrap complete; awaiting bridge events
+20:42:03.621 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 35 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+20:42:03.621 INFO RX discoveryResult  id=5202ea35 pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-64,"snr":9},"ssid":44692}
+20:42:03.621 INFO starting pair for sensor 9041b22e9a53
+20:42:03.621 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 62 64 33 38 64 62 22 7d [220 bytes]
+20:42:03.622 INFO TX addDevice        id=fd76bfd3 pay={"mac":"9041B22E9A53","key":"c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+20:42:03.623 INFO ADOPT_REQUEST tag=0x9c gw_pub=68ec23c4b36e18eae898c59211c89c3fc87a4a4aaebb2e74b08deeb740447871 gw_fb=4b8bc288e72a520fc61b4cd0bb3d13c4351cee6ad29c0331f37cef29ece47812 networkId=0x48f
+20:42:03.623 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [203 bytes]
+20:42:03.623 INFO TX sendMessage      id=e44ba94f pay={"mac":"9041B22E9A53","data":"099a","duty":true,"ack":true,"timeout":900000}
+20:42:03.623 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:03.623 INFO TX sendMessage      id=93abca4f pay={"mac":"9041B22E9A53","data":"0b9b11010d14","duty":true,"ack":true,"timeout":900000}
+20:42:03.623 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [339 bytes]
+20:42:03.623 INFO TX sendMessage      id=9aae56d3 pay={"mac":"9041B22E9A53","data":"029c68ec23c4b36e18eae898c59211c89c3fc87a4a4aaebb2e74b08deeb7404478714b8bc288e72a520fc61b4cd0bb3d13c4351cee6ad29c0331f37cef29ece478
+20:42:03.624 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:03.624 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 30 ... 78 22 3a 31 30 30 7d 7d [166 bytes]
+20:42:03.624 INFO RX response         id=fd76bfd3 pay={}
+20:42:03.624 INFO RX devsInfoChanged  id=098db706 pay={"capacity":{"available":99,"max":100}}
+20:42:03.624 DEBUG devsInfoChanged: {'capacity': {'available': 99, 'max': 100}}
+20:42:08.624 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 39 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+20:42:08.624 INFO RX discoveryResult  id=97182514 pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-65,"snr":9},"ssid":44692}
+20:42:12.741 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 34 ... 22 3a 34 34 36 39 32 7d [213 bytes]
+20:42:12.741 INFO RX discoveryResult  id=43adacf8 pay={"adopted":false,"mac":"90:41:B2:2E:9A:53","signal":{"rssi":-67,"snr":9},"ssid":44692}
+20:42:13.697 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:13.698 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 64 ... 73 6e 72 22 3a 39 7d 7d [350 bytes]
+20:42:13.698 INFO RX response         id=e44ba94f pay={}
+20:42:13.699 INFO RX messageReceived  id=ddc5b1ab pay={"data":"0A9AAE940001000100010CB24D9D0452B4BA379A5749018003AB8809AC01FB03080F110E01010402010311010A0D01020E01012001011202061301040301041401011501011601010F01011
+20:42:13.699 INFO UL 9041b22e9a53 inner=0x0a len=78
+20:42:13.699 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:13.699 INFO TX sendMessage      id=d1c520f6 pay={"mac":"9041B22E9A53","data":"0e9d0d00012c","duty":true,"ack":true,"timeout":900000}
+20:42:13.699 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:13.699 INFO TX sendMessage      id=b07bf0ba pay={"mac":"9041B22E9A53","data":"0b9e11010d14","duty":true,"ack":true,"timeout":900000}
+20:42:14.739 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:14.740 INFO RX response         id=93abca4f pay={}
+20:42:17.324 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:17.324 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 61 ... 73 6e 72 22 3a 39 7d 7d [326 bytes]
+20:42:17.324 INFO RX response         id=9aae56d3 pay={}
+20:42:17.325 INFO RX messageReceived  id=a3233860 pay={"data":"039C71857EA181A2477E55E353C319BD12D0079AE31058DD99A9E04D85E1C51FA7618428B519A18A8A692162EBB03544A4BF2ED7E6D71FCC6835D1F7D6C7637B324D","mac":"90:41:B2:2
+20:42:17.325 INFO UL 9041b22e9a53 inner=0x03 len=66
+20:42:17.325 INFO ADOPT_RESPONSE tag=0x9c devicePub=71857ea181a2477e55e353c319bd12d0079ae31058dd99a9e04d85e1c51fa761 deviceFbPub=8428b519a18a8a692162ebb03544a4bf2ed7e6d71fcc6835d1f7d6c7637b324d
+20:42:17.326 INFO rotated keys derived: key=1772bb93190911d0593f0164b0678f477e48de809fbd432c3adf0897eeb6b14c fallbackKey=c70ca7bc6e581158b9550cb449d2747f989401c4e7ed231e1e40acfdb9f20815
+20:42:17.326 DEBUG > BINARY 01 01 00 00 00 00 00 70 7b 22 61 63 74 69 6f 6e ... 32 45 39 41 35 33 22 7d [150 bytes]
+20:42:17.327 INFO TX removeDevice     id=6df8aca0 pay={"mac":"9041B22E9A53"}
+20:42:17.327 DEBUG > BINARY 01 01 00 00 00 00 00 6d 7b 22 61 63 74 69 6f 6e ... 66 32 30 38 31 35 22 7d [301 bytes]
+20:42:17.327 INFO TX addDevice        id=e4f04da0 pay={"mac":"9041B22E9A53","key":"1772bb93190911d0593f0164b0678f477e48de809fbd432c3adf0897eeb6b14c","fallbackKey":"c70ca7bc6e581158b9550cb449d2747f989401c4e7ed231e1e
+20:42:17.327 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [203 bytes]
+20:42:17.327 INFO TX sendMessage      id=63c565ee pay={"mac":"9041B22E9A53","data":"099f","duty":true,"ack":true,"timeout":900000}
+20:42:17.327 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:17.328 INFO TX sendMessage      id=c2b08f3e pay={"mac":"9041B22E9A53","data":"0ba011010d14","duty":true,"ack":true,"timeout":900000}
+20:42:17.328 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [203 bytes]
+20:42:17.328 INFO TX sendMessage      id=b229bb7e pay={"mac":"9041B22E9A53","data":"09a1","duty":true,"ack":true,"timeout":900000}
+20:42:17.328 DEBUG < BINARY 01 01 00 00 00 00 00 99 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [171 bytes]
+20:42:17.328 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:17.328 INFO RX response         id=b07bf0ba pay={}
+20:42:17.328 INFO RX response         id=6df8aca0 pay={}
+20:42:17.330 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 66 ... 78 22 3a 31 30 30 7d 7d [167 bytes]
+20:42:17.331 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:17.331 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 38 ... 78 22 3a 31 30 30 7d 7d [166 bytes]
+20:42:17.331 INFO RX devsInfoChanged  id=fdc50319 pay={"capacity":{"available":100,"max":100}}
+20:42:17.331 DEBUG devsInfoChanged: {'capacity': {'available': 100, 'max': 100}}
+20:42:17.331 INFO RX response         id=e4f04da0 pay={}
+20:42:17.331 INFO RX devsInfoChanged  id=869a514b pay={"capacity":{"available":99,"max":100}}
+20:42:17.331 DEBUG devsInfoChanged: {'capacity': {'available': 99, 'max': 100}}
+20:42:18.761 DEBUG < BINARY 01 01 00 00 00 00 00 99 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [171 bytes]
+20:42:18.761 INFO RX response         id=d1c520f6 pay={}
+20:42:19.653 DEBUG > PING 39 35 d4 76 [binary, 4 bytes]
+20:42:19.653 DEBUG % sent keepalive ping
+20:42:19.654 DEBUG < PONG 39 35 d4 76 [binary, 4 bytes]
+20:42:19.654 DEBUG % received keepalive pong
+20:42:21.442 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 62 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+20:42:21.443 INFO RX discoveryResult  id=be6bd0d8 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-66,"snr":9},"ssid":44692}
+20:42:21.443 INFO 🎉 sensor 9041b22e9a53 reached ACTIVE state
+20:42:26.701 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:26.701 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 33 ... 73 6e 72 22 3a 39 7d 7d [238 bytes]
+20:42:26.701 INFO RX response         id=63c565ee pay={}
+20:42:26.701 INFO RX messageReceived  id=3ea64851 pay={"data":"0C00010000000006020064D30703005B0B9E00140001","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-65,"snr":9}}
+20:42:26.702 INFO UL 9041b22e9a53 inner=0x0c len=22
+20:42:26.702 DEBUG telemetry 9041b22e9a53 len=22
+20:42:27.821 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:27.821 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 31 ... 73 6e 72 22 3a 39 7d 7d [350 bytes]
+20:42:27.821 INFO RX response         id=c2b08f3e pay={}
+20:42:27.822 INFO RX messageReceived  id=18d8ab5d pay={"data":"0A9FAE940001000100010CB24D9D0452B4BA379A5749018003AB8809AC01FB03080F110E01010402010311010A0D01020E01012001011202061301040301041401011501011601010F01011
+20:42:27.822 INFO UL 9041b22e9a53 inner=0x0a len=78
+20:42:27.822 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:27.822 INFO TX sendMessage      id=438fad06 pay={"mac":"9041B22E9A53","data":"0ea20d00012c","duty":true,"ack":true,"timeout":900000}
+20:42:27.822 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:27.822 INFO TX sendMessage      id=bcca43b7 pay={"mac":"9041B22E9A53","data":"0ba311010d14","duty":true,"ack":true,"timeout":900000}
+20:42:28.841 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:28.841 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 61 ... 73 6e 72 22 3a 39 7d 7d [248 bytes]
+20:42:28.841 INFO RX response         id=b229bb7e pay={}
+20:42:28.842 INFO RX messageReceived  id=aede9f8c pay={"data":"0CA001000000000911000001000100010CB24D9D0D00012C140001","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-65,"snr":9}}
+20:42:28.842 INFO UL 9041b22e9a53 inner=0x0c len=27
+20:42:28.842 DEBUG telemetry 9041b22e9a53 len=27
+20:42:29.941 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:29.941 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 39 ... 73 6e 72 22 3a 39 7d 7d [350 bytes]
+20:42:29.941 INFO RX response         id=438fad06 pay={}
+20:42:29.942 INFO RX messageReceived  id=91a0156b pay={"data":"0AA1AE940001000100010CB24D9D0452B4BA379A5749018003AB8809AC01FB03080F110E01010402010311010A0D01020E01012001011202061301040301041401011501011601010F01011
+20:42:29.942 INFO UL 9041b22e9a53 inner=0x0a len=78
+20:42:29.942 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:29.942 INFO TX sendMessage      id=073b4d87 pay={"mac":"9041B22E9A53","data":"0ea40d00012c","duty":true,"ack":true,"timeout":900000}
+20:42:29.942 DEBUG > BINARY 01 01 00 00 00 00 00 6f 7b 22 61 63 74 69 6f 6e ... 3a 39 30 30 30 30 30 7d [211 bytes]
+20:42:29.942 INFO TX sendMessage      id=8acf93e7 pay={"mac":"9041B22E9A53","data":"0ba511010d14","duty":true,"ack":true,"timeout":900000}
+20:42:30.753 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:30.753 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 32 ... 73 6e 72 22 3a 39 7d 7d [206 bytes]
+20:42:30.753 INFO RX response         id=bcca43b7 pay={}
+20:42:30.754 INFO RX messageReceived  id=2e4d9034 pay={"data":"0CA20D00012C","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-66,"snr":9}}
+20:42:30.754 INFO UL 9041b22e9a53 inner=0x0c len=6
+20:42:30.754 DEBUG telemetry 9041b22e9a53 len=6
+20:42:32.031 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:32.031 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 65 ... 73 6e 72 22 3a 38 7d 7d [248 bytes]
+20:42:32.031 INFO RX response         id=073b4d87 pay={}
+20:42:32.032 INFO RX messageReceived  id=e3985b08 pay={"data":"0CA301000000000C11000001000100010CB24D9D0D00012C140001","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-64,"snr":8}}
+20:42:32.032 INFO UL 9041b22e9a53 inner=0x0c len=27
+20:42:32.032 DEBUG telemetry 9041b22e9a53 len=27
+20:42:33.101 DEBUG < BINARY 01 01 00 00 00 00 00 72 7b 22 65 72 72 6f 72 22 ... 00 00 00 00 00 02 7b 7d [132 bytes]
+20:42:33.101 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 62 ... 73 6e 72 22 3a 39 7d 7d [206 bytes]
+20:42:33.101 INFO RX response         id=8acf93e7 pay={}
+20:42:33.102 INFO RX messageReceived  id=b990ad3b pay={"data":"0CA40D00012C","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-63,"snr":9}}
+20:42:33.102 INFO UL 9041b22e9a53 inner=0x0c len=6
+20:42:33.102 DEBUG telemetry 9041b22e9a53 len=6
+20:42:33.953 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 64 ... 73 6e 72 22 3a 38 7d 7d [248 bytes]
+20:42:33.953 INFO RX messageReceived  id=dbad8ea9 pay={"data":"0CA501000000000E11000001000100010CB24D9D0D00012C140001","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-64,"snr":8}}
+20:42:33.953 INFO UL 9041b22e9a53 inner=0x0c len=27
+20:42:33.953 DEBUG telemetry 9041b22e9a53 len=27
+20:42:39.654 DEBUG > PING b7 cb ff 4e [binary, 4 bytes]
+20:42:39.654 DEBUG % sent keepalive ping
+20:42:39.655 DEBUG < PONG b7 cb ff 4e [binary, 4 bytes]
+20:42:39.655 DEBUG % received keepalive pong
+20:42:51.447 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 39 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+20:42:51.447 INFO RX discoveryResult  id=913c0a7f pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-63,"snr":7},"ssid":44692}
+20:42:59.655 DEBUG > PING 28 a6 30 6c [binary, 4 bytes]
+20:42:59.656 DEBUG % sent keepalive ping
+20:42:59.657 DEBUG < PONG 28 a6 30 6c [binary, 4 bytes]
+20:42:59.657 DEBUG % received keepalive pong
+20:43:00.653 DEBUG < PING '1777603380' [text, 10 bytes]
+20:43:00.653 DEBUG > PONG '1777603380' [text, 10 bytes]
+20:43:19.657 DEBUG > PING ce 1a 49 12 [binary, 4 bytes]
+20:43:19.658 DEBUG % sent keepalive ping
+20:43:19.658 DEBUG < PONG ce 1a 49 12 [binary, 4 bytes]
+20:43:19.658 DEBUG % received keepalive pong
+20:43:21.440 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 30 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+20:43:21.442 INFO RX discoveryResult  id=0f00363b pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-75,"snr":8},"ssid":44692}
+20:43:26.943 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 31 ... 73 6e 72 22 3a 38 7d 7d [210 bytes]
+20:43:26.944 INFO RX messageReceived  id=169aa3b7 pay={"data":"0C00130000000043","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-59,"snr":8}}
+20:43:26.944 INFO UL 9041b22e9a53 inner=0x0c len=8
+20:43:26.944 DEBUG telemetry 9041b22e9a53 len=8
+20:43:28.211 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 39 ... 6e 72 22 3a 31 30 7d 7d [233 bytes]
+20:43:28.212 INFO RX messageReceived  id=98a8376a pay={"data":"0C00010000000044020064D40703005B0B9E00","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-62,"snr":10}}
+20:43:28.212 INFO UL 9041b22e9a53 inner=0x0c len=19
+20:43:28.212 DEBUG telemetry 9041b22e9a53 len=19
+20:43:39.659 DEBUG > PING 'k~\t\x01' [text, 4 bytes]
+20:43:39.660 DEBUG % sent keepalive ping
+20:43:39.661 DEBUG < PONG 'k~\t\x01' [text, 4 bytes]
+20:43:39.661 DEBUG % received keepalive pong
+20:43:50.801 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 35 ... 73 6e 72 22 3a 38 7d 7d [210 bytes]
+20:43:50.801 INFO RX messageReceived  id=5185a6a5 pay={"data":"0C0013000000005B","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-62,"snr":8}}
+20:43:50.801 INFO UL 9041b22e9a53 inner=0x0c len=8
+20:43:50.801 DEBUG telemetry 9041b22e9a53 len=8
+20:43:52.061 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 63 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+20:43:52.063 INFO RX discoveryResult  id=c5ea1644 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-57,"snr":9},"ssid":44692}
+20:43:52.987 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 37 ... 73 6e 72 22 3a 39 7d 7d [232 bytes]
+20:43:52.987 INFO RX messageReceived  id=7dce833d pay={"data":"0C0001000000005C020064D80603005B0B9E00","mac":"90:41:B2:2E:9A:53","signal":{"rssi":-59,"snr":9}}
+20:43:52.987 INFO UL 9041b22e9a53 inner=0x0c len=19
+20:43:52.987 DEBUG telemetry 9041b22e9a53 len=19
+20:43:59.660 DEBUG > PING '\x0cL̒' [text, 4 bytes]
+20:43:59.661 DEBUG % sent keepalive ping
+20:43:59.662 DEBUG < PONG '\x0cL̒' [text, 4 bytes]
+20:43:59.662 DEBUG % received keepalive pong
+20:44:01.652 DEBUG < PING '1777603441' [text, 10 bytes]
+20:44:01.652 DEBUG > PONG '1777603441' [text, 10 bytes]
+20:44:19.661 DEBUG > PING d8 d0 e6 2c [binary, 4 bytes]
+20:44:19.662 DEBUG % sent keepalive ping
+20:44:19.663 DEBUG < PONG d8 d0 e6 2c [binary, 4 bytes]
+20:44:19.663 DEBUG % received keepalive pong
+20:44:21.443 DEBUG < BINARY 01 01 00 00 00 00 00 6f 7b 22 69 64 22 3a 22 38 ... 22 3a 34 34 36 39 32 7d [229 bytes]
+20:44:21.444 INFO RX discoveryResult  id=8466be28 pay={"adopted":true,"mac":"90:41:B2:2E:9A:53","networkId":1167,"signal":{"rssi":-53,"snr":9},"ssid":44692}

@@ -501,6 +501,150 @@ pair flow, fire-and-forget plumbing) remains valuable as the
 controller-side scaffolding for Y5: only the grant body itself needs
 replacement.
 
+### Phase Y5 step 1 — offline crack negative (2026-04-30 evening)
+
+Before opening Ghidra on the bridge or chasing sensor firmware, we
+ran the cheapest possible probe: an offline crack against the 8
+captured grants under the hypothesis that `addDevice.key` is the
+controller↔sensor PSK and the inner key derives via BLAKE2b/HKDF/
+Noise over plausible (eph_pub, addDevice.key, mac, NN, network_id)
+orderings. Crack scripts:
+[`tools/grant_crack/crack_y3.py`](../../tools/grant_crack/crack_y3.py)
+and [`tools/grant_crack/crack_v2.py`](../../tools/grant_crack/crack_v2.py)
+(uncommitted in worktree).
+
+Coverage:
+
+- **KDF inputs**: every concatenation/permutation of
+  `{addDevice.key, eph_pub, K×base, K×eph_pub_DH, sensor_mac, NN,
+  network_id, BRIDGE_SALT}`.
+- **KDFs**: BLAKE2b-32 plain + keyed + 5 personalisations, BLAKE2s,
+  SHA-256, HKDF-SHA-256, Noise_N/X/K with ChaChaPoly + AESGCM and
+  SHA-256 / BLAKE2 hash variants.
+- **AEADs**: libsodium `crypto_secretbox` (XSalsa20+Poly1305),
+  XChaCha20-Poly1305, ChaCha20-Poly1305 IETF, ChaCha20-Poly1305
+  legacy.
+- **Nonces**: zeros, NN-padded, eph_pub-derived
+  (first/last 24/12), ASCII-tag tail (`UBNG`/`UBNV`/`GRNT`/etc.),
+  MAC-prefixed, blake2b-derived, lengths 24/12/8.
+- **AD**: empty, `02 NN`, `02 NN || trailer`, eph_pub, sensor MAC.
+- **ct layouts**: `tag||ct`, `ct||tag`.
+
+Total **~180 k attempts, zero hits.**
+
+Architectural finding ruling out further bridge-side work: the
+keyhook log of the Y3 pair shows the bridge gh_update'ing the full
+70 B grant exactly **once**, with `OUTLEN=4` (the LoRa-frame MAC).
+The bridge never processes the inner 32 B as a separate
+cryptographic object. Therefore no bridge instrumentation
+(LD_PRELOAD, gdbserver, Ghidra static RE) can recover the inner
+key — it only exists inside the UniFi Network controller (encryption
+side) and the sensor firmware (decryption side).
+
+**Decision: pivot to static UniFi Network app RE.** User constraint:
+no Frida / live JVM hooking is available (no self-hosted UniFi).
+Static decompile only. Plan now lives in the active "Phase Y5"
+section of [`docs/OPEN_GATEWAY_PLAN.md`](../OPEN_GATEWAY_PLAN.md).
+
+### Phase Y5 step 2 — solved via UniFi Protect static RE (2026-04-30 evening)
+
+Self-hosted UniFi *Network* doesn't run Protect, so SuperLink
+controller code lives only in firmware images for Protect-capable
+appliances. Path taken:
+
+1. Pulled UNVR firmware v5.0.16 from the open Ubiquiti API
+   (`https://fw-update.ubnt.com/api/firmware?filter=eq~~platform~~UNVR&filter=eq~~channel~~release&sort=-version`),
+   stored at `firmware/dumps/UNVR-5.0.16-9d351dce.bin`. UNVR is a
+   Protect-only appliance — cleanest target, no Network/Talk/Access
+   bloat.
+2. Extracted the rootfs squashfs at offset `0xE88D45` to
+   `firmware/analysis/unvr-5.0.16/ulp-fs/` (avoiding the macOS
+   case-collision in `/usr/lib/aarch64-linux-gnu/perl/5.32.1/` by
+   doing a targeted extract).
+3. Located the Protect server bundle at
+   `usr/share/unifi-protect/app/service.js` (5.1 MB, single-line
+   webpack output) and its source map (3160 source paths but
+   `sourcesContent` empty).
+4. Source map listed
+   `./src/middleware/devices/loraBridges/helpers/applicationLayer/messages.ts`
+   among the bundled sources. Found webpack module **41118** in the
+   bundle — the LoRa application-layer message codec. Decoded both
+   `encodeMessage` and the full `MessageId` enum.
+
+**The corrected picture.** The 70-byte body is not a "Class B grant"
+and contains no encryption. It's a plaintext `ADOPT_REQUEST` with
+two raw X25519 pubkeys + networkId:
+
+```
+[1B messageId=0x02] [1B messageTag] [32B gatewayPublicKey]
+                                   [32B gatewayFallbackPublicKey]
+                                   [4B networkId BE]
+```
+
+The 66-byte sensor reply is plaintext `ADOPT_RESPONSE` (messageId
+`0x03`) carrying the sensor's two fresh ephemeral pubkeys:
+
+```
+[1B messageId=0x03] [1B messageTag (echoes request)]
+                    [32B devicePublicKey]
+                    [32B deviceFallbackPublicKey]
+```
+
+Both 64-byte middles being `pub || pub` (not `pub || ct`) is what
+explained the MSB[31]-clear pattern in *both* halves of all 8
+captured "grants" — both are Curve25519 u-coords.
+
+**Why replay was insufficient.** ADOPT_REQUEST/RESPONSE is a
+two-way ECDH exchange. The sensor replies with fresh ephemeral
+pubkeys; the controller must derive new persistent keys from them
+via the KDF in
+`./src/middleware/devices/loraBridges/subscribers/deviceAdopt.ts`
+(webpack cluster around offset 4 064 734):
+
+```js
+H = bytes.fromhex('70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59')
+
+E(my_priv, their_pub) =
+  blake2b32(scalarMult(my_priv, their_pub) || base*my_priv ||
+            their_pub || H)
+
+# After ADOPT_RESPONSE:
+addDevice.key         = E(r, devicePublicKey)
+addDevice.fallbackKey = E(o, deviceFallbackPublicKey)
+```
+
+The sensor runs the same KDF on its end (using its corresponding
+private). Both sides update their persistent state.
+
+In the captured Y3 trace this rotation is visible as the
+post-grant `removeDevice` + `addDevice {key=aed56bd5…,
+fallbackKey=a42b0887…}` — those values are E(r, devicePublicKey)
+and E(o, deviceFallbackPublicKey) for *that* session's keys. Our
+mock replayed those literal stale values, so the sensor's view of
+the persistent secret diverged from the mock's, and the sensor
+silently refused operational mode (red LED, no `0x0c` telemetry).
+
+**What this means for Y5 implementation.** No crypto cracking
+needed. The mock just needs:
+
+1. Generate fresh `r`, `o` per pair attempt; encode ADOPT_REQUEST
+   with `gatewayPublicKey = base*r`, `gatewayFallbackPublicKey =
+   base*o`, `networkId = 0x048F`.
+2. Parse the sensor's 66-byte ADOPT_RESPONSE to extract
+   `devicePublicKey`, `deviceFallbackPublicKey`.
+3. Compute `m = E(r, devicePublicKey)`,
+   `h_alt = E(o, deviceFallbackPublicKey)`.
+4. Send `removeDevice` + rotated `addDevice {key: m,
+   fallbackKey: h_alt}`.
+
+See [`superlink_application_layer.md`](superlink_application_layer.md)
+for the full message vocabulary recovered from `messages.ts`.
+
+**Status of the 2026-04-30 offline crack.** It was bound to fail —
+not because `addDevice.key` is wrong as a PSK, but because there is
+no PSK encryption step at all. The crack scripts at
+`tools/grant_crack/` are kept as a record of the negative result.
+
 ### Phase 2 attempt #1 — 2026-04-30 (partial; not finished)
 
 Set up the firewall + mock + factory-reset on 2026-04-30. Got real

@@ -113,31 +113,89 @@ Full WebSocket API findings in
 - Bridge emits per-sensor events upstream (sensor data, discovery,
   state changes).
 
-### Not solved (the remaining blocker)
+### Solved (2026-04-30 evening)
 
-**The 70-byte Class B grant content** (the 64 middle bytes between the
-stable `02 NN` header and the `00 00 04 8f` trailer) is built locally
-by the bridge via byte-by-byte inline stores. These stores are
-compiled as individual `strb` instructions invisible to LD_PRELOAD.
+**The 70-byte body is `ADOPT_REQUEST`, not a grant.** Recovered
+from static RE of UniFi Protect (UNVR firmware v5.0.16) — see
+[`docs/protocol/superlink_application_layer.md`](protocol/superlink_application_layer.md)
+for the corrected wire-level protocol. There is no inner
+encryption: the 64 middle bytes are two raw X25519 pubkeys
+(`gatewayPublicKey || gatewayFallbackPublicKey`), the trailing 4 B
+is networkId BE, and the leading two bytes are
+`messageId=0x02 || messageTag`. The sensor's 66-byte 0x03 reply is
+plaintext `ADOPT_RESPONSE` carrying the sensor's two fresh
+ephemeral pubkeys.
 
-Observed generation path (pair7 2026-04-21):
-1. Bridge builds a hex-string representation of the grant char-by-char
-   via `std::string::push_back`
-2. Bridge calls `sub_327c4` (hex-string-to-bytes decoder) to convert
-   that hex string back to binary at a heap address
-3. Binary is MIC'd with BLAKE2b, XSalsa20-encrypted with session_key,
-   and transmitted
+The "encrypted Class B grant" framing was a multi-week blind alley
+caused by mis-reading the MSB[31]-clear pattern: we assumed
+`[eph_pub LE] || [Poly1305 MAC + ct]`; the real structure is
+`[gatewayPub LE] || [gatewayFallbackPub LE]` — both halves are
+Curve25519 u-coords, both naturally MSB-clear, no ciphertext to
+decrypt.
 
-The inline byte stores that produce each hex char from binary state
-are the only remaining gap. They operate on values derived from
-session state (session_key, sensor MAC, counters, timing). We cannot
-observe them without kernel hardware-breakpoint support — which this
-bridge's kernel lacks (`CONFIG_HAVE_HW_BREAKPOINT=n`).
+**Persistent-key KDF**, recovered from
+`./src/middleware/devices/loraBridges/subscribers/deviceAdopt.ts`
+in the Protect bundle:
 
-Our emulator currently hardcodes a 64B middle copied from one
-captured session. The sensor rejects it (continues to retry 0x43 every
-~34 seconds) because the byte contents are session-specific and won't
-match a new session's derived state.
+```
+H = 70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59  (32 B salt baked into Protect)
+
+E(my_priv, their_pub) = blake2b32( X25519(my_priv, their_pub)
+                                   || base × my_priv
+                                   || their_pub
+                                   || H )
+
+After ADOPT_REQUEST/RESPONSE round trip (controller eph privs r, o):
+  addDevice.key         = E(r, devicePublicKey)
+  addDevice.fallbackKey = E(o, deviceFallbackPublicKey)
+```
+
+The sensor runs the inverse with its own fresh ephemeral privates;
+both sides hold matching keys after the exchange. Each subsequent
+re-pair runs another ADOPT_REQUEST/RESPONSE cycle and rotates these
+values. In the Y3 trace this is the post-grant
+`removeDevice` + `addDevice {key=aed56bd5…, fallbackKey=a42b0887…}`
+step we already observed but didn't realise was the rotation product.
+
+**Why replay-grant failed at the sensor layer.** The mock replayed a
+captured `ADOPT_REQUEST` (containing stale `gatewayPublicKey`s) and
+then replayed the captured rotated `addDevice` values. The sensor
+*did* generate fresh response pubkeys to our request (so 0x03 ACK
+fired and the bridge flipped `adopted=true`), but the rotation
+values our mock then sent to the bridge were derived from a
+*different* session's ephemerals than the sensor's actual
+just-emitted response. The sensor's persistent state diverged from
+the controller's, so it refused operational mode (red LED, no
+0x0c telemetry).
+
+#### Y5 implementation requirements
+
+Trivial follow-on. In `tools/mock_controller/server.py`:
+
+1. Generate fresh `r`, `o` privates per pair attempt.
+2. Build `ADOPT_REQUEST` body as
+   `[0x02, NN, base*r (32 B), base*o (32 B), networkId BE (4 B)]`
+   = 70 B.
+3. Replace the hardcoded `TEST_SENSOR.grant_data` with this dynamic
+   build.
+4. On the 66-byte `messageReceived` (sensor `ADOPT_RESPONSE`), parse
+   `devicePublicKey = bytes[2:34]`, `deviceFallbackPublicKey =
+   bytes[34:66]`.
+5. Compute `m = E(r, devicePublicKey)`,
+   `h_alt = E(o, deviceFallbackPublicKey)`.
+6. Send rotated `addDevice {key: m, fallbackKey: h_alt}` (replacing
+   the captured stale values).
+
+Estimate: ~50 lines.
+
+#### Status of the offline-crack negative
+
+The earlier ~180 k key×nonce×cipher offline crack was destined to
+fail — not because the algorithm was hard, but because there was no
+ciphertext. The crack scripts at `tools/grant_crack/` are kept as a
+record of the negative result; see
+[`docs/protocol/controller_y4_results.md`](protocol/controller_y4_results.md)
+"Phase Y5 step 1" for the full coverage.
 
 ---
 
@@ -226,12 +284,77 @@ bridge then successfully pairs a sensor, we have:
 - A way to inject *our own* values (including crafted `key` contexts)
   and observe how the bridge/sensor react.
 
-### Phase Y5 — Generalize across sensors (1 week)
+### Phase Y5 — solved via UniFi Protect static RE (2026-04-30)
 
-Pair a second, different factory-reset sensor via the mock. See what
-the mock needs to generate (random `key`? derive from MAC?) to make
-the new sensor succeed. This answers the universal-vs-per-device
-question empirically.
+**Background.** Phase 2 retry-4 walked the captured Y3 script
+end-to-end. Bridge flipped `adopted=true`, but the sensor stayed at
+red LED with zero `0x0c` telemetry across multiple reed-switch events.
+We diagnosed this as the captured grant body not being replayable.
+See [`docs/protocol/controller_y4_results.md`](protocol/controller_y4_results.md)
+for the original diagnostic.
+
+**Step 1 — offline crack (negative).** Spent ~180 k key×nonce×cipher
+attempts treating `addDevice.key` as a PSK or DH foothold against the
+hypothesised `[eph_pub] || [MAC + ct]` structure. Zero hits. Coverage
+detailed in
+[`controller_y4_results.md`](protocol/controller_y4_results.md)
+"Phase Y5 step 1". Crack scripts kept at `tools/grant_crack/`.
+
+**Step 2 — UniFi Protect static RE (solved).** The right bundle was
+**Protect**, not Network — self-hosted UniFi Network doesn't include
+the SuperLink controller code. Path:
+
+1. Pulled UNVR firmware v5.0.16 from the open Ubiquiti API
+   (`https://fw-update.ubnt.com/api/firmware?filter=eq~~platform~~UNVR&filter=eq~~channel~~release&sort=-version`);
+   stored at `firmware/dumps/UNVR-5.0.16-9d351dce.bin`. UNVR is a
+   Protect-only appliance — minimum surrounding code.
+2. Extracted the rootfs squashfs at offset `0xE88D45` to
+   `firmware/analysis/unvr-5.0.16/ulp-fs/` (targeted extract avoiding
+   a macOS case-collision in perl tree).
+3. Located the Protect server bundle
+   `usr/share/unifi-protect/app/service.js` (5.1 MB single-line
+   webpack output). Source map listed
+   `./src/middleware/devices/loraBridges/...` modules.
+4. Decoded webpack module **41118**
+   (`messages.ts`) — full `MessageId` enum + per-message
+   encode/decode. The 70-byte body is plaintext `ADOPT_REQUEST` (id
+   `0x02`); the 66-byte sensor reply is plaintext `ADOPT_RESPONSE`
+   (id `0x03`). Both halves of the 64B middle are X25519 pubkeys —
+   no encryption.
+5. Decoded the persistent-key KDF in
+   `subscribers/deviceAdopt.ts`. Formula recorded in
+   [`docs/protocol/superlink_application_layer.md`](protocol/superlink_application_layer.md).
+
+**Why replay was insufficient (corrected understanding).** The
+exchange is a two-way Curve25519 ratchet: the controller sends fresh
+ephemeral pubkeys, the sensor responds with its own fresh ephemeral
+pubkeys, and both sides derive new persistent
+`(addDevice.key, fallbackKey)` from the four pubkeys + a baked-in
+salt `H`. Our mock replayed stale request pubkeys *and* stale
+rotation values from the captured Y3 trace. The sensor responded
+with fresh pubkeys (so 0x03 ACK fired), but our subsequent rotation
+values weren't derived from those — sensor and controller persistent
+state diverged.
+
+**Implementation work.** Trivial follow-on, no cryptanalysis:
+
+1. Generate fresh `r`, `o` privates per pair attempt; encode
+   `ADOPT_REQUEST` per
+   [`superlink_application_layer.md`](protocol/superlink_application_layer.md).
+2. Replace hardcoded `TEST_SENSOR.grant_data` in
+   `tools/mock_controller/server.py` with a function building a
+   fresh ADOPT_REQUEST.
+3. On the sensor's 66-byte ADOPT_RESPONSE, parse `devicePublicKey`,
+   `deviceFallbackPublicKey`.
+4. Compute `m = E(r, devicePublicKey)`,
+   `h_alt = E(o, deviceFallbackPublicKey)` (where `E` is the
+   blake2b32 KDF in
+   [`superlink_application_layer.md`](protocol/superlink_application_layer.md)).
+5. Send rotated `addDevice {key: m, fallbackKey: h_alt}`.
+
+Estimated ~50 lines of Python. Verifiable against the 8 captured
+"grants" by checking that `gatewayPublicKey || gatewayFallbackPublicKey
+|| networkId` round-trips through `encodeMessage`.
 
 ### Phase Y6 — Replace the bridge (optional, long term)
 
@@ -277,13 +400,14 @@ Retained notes:
 | Post-ACTIVE handshake replies | ✅ counter logic understood |
 | `networkId = 0x048F` in 0x43 trailer | ✅ |
 | Controller JSON-RPC API discovered | ✅ partial schema captured |
-| Class B grant 64B middle content | ❌ blocked — local byte-store generation invisible |
-| Sensor reaches paired state | ❌ blocked on Class B grant OR mock controller |
-| Works on arbitrary factory sensor | ❌ blocked on mock controller replay |
+| 70 B body decoded | ✅ plaintext `ADOPT_REQUEST` (not a grant) — see `superlink_application_layer.md` |
+| Sensor reaches paired state | 🟡 unblocked — implementation pending in `mock_controller/server.py` |
+| Works on arbitrary factory sensor | 🟡 unblocked — same implementation generalises |
 | Mock UniFi controller handshake | ✅ Phase Y1-Y2 done |
 | Plaintext capture of bridge↔controller JSON-RPC | ✅ Phase Y3 done — full method vocabulary + 70B grant + KDF inputs all captured |
-| Drive end-to-end pair via mock | ❌ next milestone — Phase Y4 |
-| 64B grant-middle algorithm | 🟡 strong hypothesis: `[32B X25519 ephemeral pubkey LE] \|\| [32B Poly1305 MAC + ciphertext]` — see [controller_y3_findings.md](protocol/controller_y3_findings.md) |
+| Drive end-to-end pair via mock (bridge side) | ✅ Phase Y4 done — `adopted=true` + `networkId=1167` |
+| Drive end-to-end pair via mock (sensor side) | ❌ Phase 2 retry-4 (2026-04-30): replay grant insufficient, sensor stays red |
+| 64B middle algorithm | ✅ recovered from UniFi Protect bundle (UNVR fw v5.0.16); not encryption — two raw X25519 pubkeys (`gatewayPublicKey \|\| gatewayFallbackPublicKey`); persistent-key KDF `E(my_priv, their_pub) = blake2b32(shared \|\| my_pub \|\| their_pub \|\| H)` with `H` constant pulled from the bundle |
 
 **Phase Y1-Y2 results (2026-04-21):** Mock controller at
 [`tools/mock_controller/server.py`](../tools/mock_controller/server.py)
@@ -332,16 +456,11 @@ Path to a sensor pairing via our mock:
 3. **Generalize**: replace canned values with sensor-keyed lookups so
    we can pair multiple sensors whose keys we've previously captured.
 
-### Phase Y5 — generalize across fresh sensors (deferred)
+### Phase Y5 status — see active section above
 
-Pairing a *previously-unseen* factory-reset sensor still requires
-either:
-- The persistent `addDevice.key` for that sensor (which lives in the
-  real controller's DB and isn't observable without RE'ing it), OR
-- The 64B grant-middle algorithm (which lets us generate valid grants
-  for any sensor).
-
-Open question — see `docs/protocol/controller_y3_findings.md` "Open
-questions". A sub-agent is currently analysing the captured 64B
-middle for substring/structural matches against known constants;
-result will inform whether grant generation is tractable.
+The original deferred Y5 has been promoted to the active phase above
+("Phase Y5 — fresh grant generator from UniFi Network static RE")
+after Phase 2 retry-4 (2026-04-30) confirmed that even pairing a
+previously-known sensor requires a fresh-generated grant. The same
+work unblocks both same-sensor re-pair and previously-unseen sensors
+(the algorithm + per-sensor DB schema are universal).
