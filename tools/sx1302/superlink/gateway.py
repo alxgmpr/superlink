@@ -9,11 +9,19 @@ import argparse
 import csv
 import enum
 import logging
+import secrets
 import struct
 import sys
 import time
 from datetime import datetime, timezone
 
+from .adopt import (
+    DEFAULT_NETWORK_ID,
+    MSG_ADOPT_RESPONSE,
+    decode_adopt_response,
+    encode_adopt_request,
+    kdf_E,
+)
 from .crypto import generate_keypair, compute_shared_secret, derive_session_key
 from .decoder import (
     build_frame, build_nonce, compute_mic, decrypt_frame, encrypt_payload,
@@ -45,7 +53,8 @@ class GatewaySession:
     def __init__(self, gw_mac: bytes, pairing_key: bytes,
                  beacon_interval: float = 240.0,
                  kdf_context: bytes | None = None,
-                 mgmt_counter_start: int = 0x7c):
+                 mgmt_counter_start: int = 0x7c,
+                 network_id: int = DEFAULT_NETWORK_ID):
         self.gw_mac = gw_mac
         self.pairing_key = pairing_key
         self.beacon_interval = beacon_interval
@@ -54,15 +63,31 @@ class GatewaySession:
         # bridge (e.g. via tools/keyhook).
         self._kdf_context = kdf_context if kdf_context is not None else pairing_key
         self.mgmt_counter_start = mgmt_counter_start
+        # Console networkId (4-byte BE trailer in ADOPT_REQUEST). Per-console;
+        # any 32-bit value works as long as the same one is used for the life
+        # of this gateway against this sensor.
+        self.network_id = network_id
 
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
         self.session_key: bytes | None = None
 
-        # DH state
+        # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
         self._pubkey: bytes | None = None
         self._remote_pubkey: bytes | None = None
+
+        # Application-layer ADOPT_REQUEST ephemeral privates. Set when we
+        # send the 70B ADOPT_REQUEST as the 0x43 reply; consumed when the
+        # sensor's ADOPT_RESPONSE comes back (decrypted body[0]==0x03).
+        # Discarded after one round-trip — fresh per pair attempt.
+        self._eph_priv_r: bytes | None = None
+        self._eph_priv_o: bytes | None = None
+        # Persistent keys derived from the ADOPT round-trip, ready to seed
+        # the LoRa-session KDF context on a future re-pair (out of scope for
+        # this single-session test, but logged so we can capture them).
+        self._derived_addDevice_key: bytes | None = None
+        self._derived_addDevice_fb_key: bytes | None = None
 
         # Sequence counters
         self._tx_seq_hi = 0
@@ -167,24 +192,101 @@ class GatewaySession:
                  frame.interpretation or
                  (frame.payload.hex() if frame.payload else "?"))
 
+        # Application-layer ADOPT_RESPONSE body inspection. Sensor wraps the
+        # 66-byte ADOPT_RESPONSE inside a 0x54 (data UL) frame after we send
+        # the ADOPT_REQUEST. Body layout: [0x03] [tag] [32B devicePub] [32B
+        # deviceFbPub]. We feed the two pubkeys through kdf_E with the
+        # ephemeral privates we stashed on TX to derive the new persistent
+        # (addDevice.key, fallbackKey), then ship the post-rotation
+        # `09 / 0b / 09` burst that signals "adoption complete" to the sensor
+        # (matches what the real UniFi controller does via sendMessage —
+        # without this burst the sensor times out and retries 0x43).
+        if (frame.payload and len(frame.payload) >= 66
+                and frame.payload[0] == MSG_ADOPT_RESPONSE
+                and 1 <= ul_channel <= 8):
+            try:
+                tag, dev_pub, dev_fb_pub = decode_adopt_response(
+                    frame.payload[:66])
+            except ValueError as exc:
+                log.warning("malformed ADOPT_RESPONSE body: %s", exc)
+                return frame, None, 0
+            if not (self._eph_priv_r and self._eph_priv_o):
+                log.warning(
+                    "ADOPT_RESPONSE received but no ephemeral state "
+                    "stored — did we send the ADOPT_REQUEST?")
+                return frame, None, 0
+
+            self._derived_addDevice_key = kdf_E(
+                self._eph_priv_r, dev_pub)
+            self._derived_addDevice_fb_key = kdf_E(
+                self._eph_priv_o, dev_fb_pub)
+            log.info(
+                "ADOPT_RESPONSE tag=0x%02x devicePub=%s devFbPub=%s",
+                tag, dev_pub.hex(), dev_fb_pub.hex())
+            log.info("  derived addDevice.key=%s",
+                     self._derived_addDevice_key.hex())
+            log.info("  derived addDevice.fallbackKey=%s",
+                     self._derived_addDevice_fb_key.hex())
+            # Discard the ephemerals — must NOT be reused.
+            self._eph_priv_r = None
+            self._eph_priv_o = None
+
+            # Post-rotation burst on the same DL channel as the 0x43 we
+            # replied to. Three back-to-back 0x74 frames signal adoption
+            # complete. NN = mgmt_counter advances by 1 each frame.
+            from .hal import DL_FREQ_HZ
+            dl_freq = DL_FREQ_HZ[ul_channel - 1]
+            burst_bodies = []
+            for body_tmpl in (b"\x09", b"\x0b\x11\x01\x0d\x14", b"\x09"):
+                if not hasattr(self, "_mgmt_counter"):
+                    self._mgmt_counter = getattr(
+                        self, "mgmt_counter_start", 0x7c)
+                mgmt = self._mgmt_counter & 0xFF
+                self._mgmt_counter += 1
+                burst_bodies.append(body_tmpl[:1] + bytes([mgmt])
+                                    + body_tmpl[1:])
+
+            tx_frames = []
+            for body in burst_bodies:
+                self._post_pair_tx_seq_hi = getattr(
+                    self, "_post_pair_tx_seq_hi", 0) + 1
+                self._post_pair_tx_seq_lo = getattr(
+                    self, "_post_pair_tx_seq_lo", 0) + 1
+                self._post_pair_counter = getattr(
+                    self, "_post_pair_counter", -1) + 1
+                seq_hi = self._post_pair_tx_seq_hi & 0xFF
+                seq_lo = self._post_pair_tx_seq_lo & 0xFF
+                counter = self._post_pair_counter
+                header = (bytes([0xE0, 0x74]) + frame.mac
+                          + bytes([seq_hi, seq_lo]))
+                mic = compute_mic(header, body)
+                tx_frame = build_frame(
+                    0xE0, 0x74, frame.mac, seq_hi, seq_lo,
+                    mic, body, self.session_key, counter=counter,
+                )
+                tx_frames.append(tx_frame)
+                log.info(
+                    "post-rotation TX 0x74 (seq=%02X.%02X counter=%d body=%s)",
+                    seq_hi, seq_lo, counter, body.hex())
+            # Queue ALL 3 burst frames for the main loop to drain
+            # back-to-back in order (no scheduled-vs-immediate mixing — the
+            # sensor validates NN strictly, so out-of-order TX kills the
+            # adoption). Return no primary tx_data; the main loop's drain
+            # path handles the whole burst.
+            self._pending_tx_frames = list(zip(tx_frames,
+                                               [dl_freq] * len(tx_frames)))
+            return frame, None, 0
+
         # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74
-        # `0b NN+1 11 01 0d 14`, 0x43 → 0x74 `02 NN+2 <64B> 00 00 04 8f`.
-        # NN is a per-session DL-management counter that increments by 1 on
-        # each reply. Across 3 captured real-bridge pairings we see:
-        #   pair2 (key 8ef9826a): 0x53→58, 0x44→59, 0x43→5a
-        #   pair3 (key 5de2900c): 0x43→6b   (0x53/0x44 not captured)
-        #   pair4 (key a7145992): 0x53→7c, 0x44→7d, 0x43→7e
-        # The initial NN is session-specific (probably derived from session
-        # key / shared secret); the sensor appears to accept any value as
-        # long as consecutive replies increment by 1.  XOR across the three
-        # captures shows ONLY position 0 (0x02) and positions 66-69
-        # (00 00 04 8f) stable; all 64 middle bytes of the 0x43 reply vary
-        # per session. Between the 0x43 RX and 0x74 TX, NO crypto call
-        # fires (no stream_xor, no BLAKE2b, no scalarmult, no randombytes)
-        # — the 64B is assembled from in-memory state, not freshly computed.
-        # We use a stable placeholder for the 64B since there is no known
-        # inner encryption; if sensor rejects, the 64B format needs deeper
-        # RE of sub_52e78 stack layout.
+        # `0b NN+1 11 01 0d 14`, 0x43 → 0x74 ADOPT_REQUEST. NN is a
+        # per-session DL-management counter that increments by 1 on each
+        # reply. The sensor appears to accept any starting value as long as
+        # consecutive replies increment by 1.
+        #
+        # Y5 (2026-04-30): the 0x43 reply IS an ADOPT_REQUEST per
+        # docs/protocol/superlink_application_layer.md — fresh ephemeral X25519
+        # keypairs per pair attempt, not the captured-pair4-bytes-with-masks
+        # blind-search the prior code was doing.
         if frame.dctrl in (0x53, 0x44, 0x43) and 1 <= ul_channel <= 8:
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
@@ -212,35 +314,25 @@ class GatewaySession:
                 body = bytes([0x09, mgmt])
             elif frame.dctrl == 0x44:
                 body = bytes([0x0b, mgmt, 0x11, 0x01, 0x0d, 0x14])
-            else:  # 0x43 — 70-byte Class B grant
-                # Track C (binary search): rotate through different 64B
-                # masks across successive 0x43 retries. Each mask zeros
-                # or alters a subregion of the 64B; if the sensor ACCEPTS
-                # a masked version (LED goes blue, 0x43 retries stop),
-                # the zeroed bytes don't matter. Counter per attempt.
-                self._mask_idx = getattr(self, "_mask_idx", 0)
-                base = bytes.fromhex(
-                    "220e8ea74917fdba472502fa8916aa66"
-                    "96350cf31be1bd676927f641e4918619"
-                    "d48383fa5189929bcb7a460d8375b1b8"
-                    "ac82209e7d99221e9a79f294742d8369"
-                )
-                MASKS = [
-                    ("baseline",       lambda b: b),
-                    ("zero_00_15",     lambda b: bytes(16) + b[16:]),
-                    ("zero_16_31",     lambda b: b[:16] + bytes(16) + b[32:]),
-                    ("zero_32_47",     lambda b: b[:32] + bytes(16) + b[48:]),
-                    ("zero_48_63",     lambda b: b[:48] + bytes(16)),
-                    ("all_zero",       lambda b: bytes(64)),
-                    ("all_0xff",       lambda b: bytes([0xff] * 64)),
-                    ("baseline_again", lambda b: b),
-                ]
-                name, fn = MASKS[self._mask_idx % len(MASKS)]
-                middle_64 = fn(base)
-                log.info("Class B grant mask #%d: %s", self._mask_idx, name)
-                self._mask_idx += 1
-                body = (bytes([0x02, mgmt]) + middle_64
-                        + bytes.fromhex("0000048f"))
+            else:  # 0x43 — emit a fresh ADOPT_REQUEST per Y5
+                if not _HAS_CRYPTO:
+                    raise RuntimeError(
+                        "pysodium required for ADOPT_REQUEST keypair generation")
+                # Fresh ephemeral keypair per pair attempt — never reuse.
+                # Stashed on `self` so the matching ADOPT_RESPONSE handler
+                # can derive the rotated persistent keys via kdf_E.
+                self._eph_priv_r = secrets.token_bytes(32)
+                self._eph_priv_o = secrets.token_bytes(32)
+                gw_pub = pysodium.crypto_scalarmult_curve25519_base(
+                    self._eph_priv_r)
+                gw_fb_pub = pysodium.crypto_scalarmult_curve25519_base(
+                    self._eph_priv_o)
+                body = encode_adopt_request(
+                    mgmt, gw_pub, gw_fb_pub, self.network_id)
+                log.info(
+                    "ADOPT_REQUEST tag=0x%02x gw_pub=%s gw_fb_pub=%s "
+                    "networkId=0x%x",
+                    mgmt, gw_pub.hex(), gw_fb_pub.hex(), self.network_id)
 
             header = bytes([0xE0, 0x74]) + frame.mac + bytes([seq_hi, seq_lo])
             mic = compute_mic(header, body)
@@ -316,6 +408,9 @@ class GatewaySession:
             # ConnectionChallenge — extract sensor's DH pubkey and establish session
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
+            log.info("0x42 PT (%dB): %s",
+                     len(frame.payload) if frame.payload else 0,
+                     frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
                 log.warning("ConnectionChallenge too short: %d bytes",
                             len(frame.payload) if frame.payload else 0)
@@ -353,6 +448,15 @@ class GatewaySession:
                 shared, self._pubkey, self._remote_pubkey,
                 context=self._kdf_context,
             )
+            # FULL DEBUG DUMP — temp instrumentation for offline KDF analysis.
+            log.info("DBG gw_priv=%s gw_pub=%s sensor_pub=%s shared=%s session_key=%s kdf_ctx=%s",
+                     self._privkey.hex(), self._pubkey.hex(),
+                     self._remote_pubkey.hex(), shared.hex(),
+                     self.session_key.hex(), self._kdf_context.hex())
+            log.info("DBG blob_ct=%s 0x42_frame_seq=%02X.%02X mac=%s",
+                     bytes(frame.payload[35:45]).hex(),
+                     frame.seq_hi, frame.seq_lo,
+                     format_mac(frame.mac))
             self._ul_counter_offset = frame.seq_hi
             self.state = State.ACTIVE
             log.info("Session key derived (kdf_ctx=%s...)",
@@ -554,6 +658,27 @@ def main():
                     log.info("TX %s: process=%.1fms send=%.1fms",
                              mode, (t_pre_tx - t_rx) * 1000,
                              (t_post_tx - t_pre_tx) * 1000)
+
+                # Drain any TX frames the handler queued
+                # (post-rotation burst after ADOPT_RESPONSE). The sensor
+                # validates NN order strictly, so this MUST go on-air in
+                # order — schedule ALL frames with sequential timestamps,
+                # never mixing scheduled + immediate.
+                pending = getattr(session, "_pending_tx_frames", None)
+                if pending:
+                    session._pending_tx_frames = []
+                    base_ts = pkt.timestamp_us + (args.tx_delay or 1_000_000)
+                    BURST_SPACING_US = 500_000  # 500ms — generous, safe
+                    for i, (follow_tx, follow_freq) in enumerate(pending):
+                        ts = base_ts + i * BURST_SPACING_US
+                        hal.send(follow_freq, follow_tx,
+                                 bandwidth=BW_500KHZ,
+                                 tx_timestamp_us=ts,
+                                 invert_pol=args.invert_iq)
+                        log.info(
+                            "burst TX %d/%d (scheduled t+%.1fs)",
+                            i + 1, len(pending),
+                            (ts - pkt.timestamp_us) / 1e6)
 
                 if frame and csv_writer:
                     csv_writer.writerow([

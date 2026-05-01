@@ -51,79 +51,29 @@ try:
 except ImportError:
     sys.exit("pip install 'websockets>=12'")
 
-import hashlib
-
 try:
     import nacl.bindings as nacl_bindings
 except ImportError:
     sys.exit("pip install pynacl")
 
-
-log = logging.getLogger("mock-controller")
-
-
-# ---------------------------------------------------------------------------
-# SuperLink LoRa application-layer codec.
-#
-# Recovered 2026-04-30 from static RE of UniFi Protect (UNVR fw v5.0.16,
-# webpack module 41118 = ./src/middleware/devices/loraBridges/helpers/
-# applicationLayer/messages.ts). Full reference at
-# docs/protocol/superlink_application_layer.md.
-#
-# A message on the wire is:
-#     [1B messageId] [1B messageTag] [N-byte payload]
-# ---------------------------------------------------------------------------
-
-# MessageId enum values we use.
-MSG_ADOPT_REQUEST = 0x02
-MSG_ADOPT_RESPONSE = 0x03
-
-# 32B salt baked into Protect's deviceAdopt KDF (deviceAdopt.ts).
-KDF_SALT_H = bytes.fromhex(
-    "70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59"
+# Import the ADOPT_REQUEST/RESPONSE codec + KDF from the shared sx1302
+# package so the Pi gateway and this mock stay in sync. Tests already wire
+# tools/sx1302 onto sys.path via tests/conftest.py; we replicate that here
+# for direct script execution.
+sys.path.insert(
+    0, str(Path(__file__).resolve().parents[1] / "sx1302")
+)
+from superlink.adopt import (  # noqa: E402
+    KDF_SALT_H,            # noqa: F401  (re-exported for tests)
+    MSG_ADOPT_REQUEST,
+    MSG_ADOPT_RESPONSE,    # noqa: F401  (re-exported for tests)
+    decode_adopt_response,
+    encode_adopt_request,
+    kdf_E,
 )
 
 
-def kdf_E(my_priv: bytes, their_pub: bytes) -> bytes:
-    """Persistent-key KDF from Protect's deviceAdopt.ts.
-
-        E(my_priv, their_pub) = blake2b32(
-            X25519(my_priv, their_pub)
-            || base × my_priv
-            || their_pub
-            || H )
-    """
-    if len(my_priv) != 32 or len(their_pub) != 32:
-        raise ValueError("expected 32-byte priv/pub")
-    shared = nacl_bindings.crypto_scalarmult(my_priv, their_pub)
-    my_pub = nacl_bindings.crypto_scalarmult_base(my_priv)
-    return hashlib.blake2b(
-        shared + my_pub + their_pub + KDF_SALT_H, digest_size=32
-    ).digest()
-
-
-def encode_adopt_request(
-    message_tag: int,
-    gw_pub: bytes,
-    gw_fb_pub: bytes,
-    network_id: int,
-) -> bytes:
-    """Build the 70-byte ADOPT_REQUEST wire body."""
-    if len(gw_pub) != 32 or len(gw_fb_pub) != 32:
-        raise ValueError("pubkeys must be 32 bytes")
-    return (
-        bytes([MSG_ADOPT_REQUEST, message_tag & 0xFF])
-        + gw_pub
-        + gw_fb_pub
-        + network_id.to_bytes(4, "big")
-    )
-
-
-def decode_adopt_response(body: bytes) -> tuple[int, bytes, bytes]:
-    """Parse a 66-byte ADOPT_RESPONSE. Returns (messageTag, devicePub, deviceFbPub)."""
-    if len(body) < 66 or body[0] != MSG_ADOPT_RESPONSE:
-        raise ValueError(f"not an ADOPT_RESPONSE (len={len(body)}, id=0x{body[:1].hex()})")
-    return body[1], body[2:34], body[34:66]
+log = logging.getLogger("mock-controller")
 
 
 # ---------------------------------------------------------------------------

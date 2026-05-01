@@ -283,3 +283,118 @@ def test_connection_challenge_derives_correct_key():
     result, _, _ = session.handle_rx(data_raw)
     assert result is not None
     assert result.payload == data_payload
+
+
+# ---------------------------------------------------------------------------
+# Y5 ADOPT_REQUEST / ADOPT_RESPONSE flow
+# ---------------------------------------------------------------------------
+
+def _active_session_for_adopt():
+    """Helper: GatewaySession in ACTIVE state with deterministic state for
+    the post-pair management replies."""
+    from superlink.decoder import build_frame  # noqa: F401 (re-import sanity)
+
+    gw_mac = bytes.fromhex("AABBCCDDEEFF")
+    session = GatewaySession(
+        gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY,
+        mgmt_counter_start=0x9C,
+    )
+    session.start()
+    session.state = State.ACTIVE
+    session.session_key = bytes(range(32))
+    session.sensor_mac = SENSOR_MAC
+    session._ul_counter_offset = 0
+    return session
+
+
+def test_active_0x43_emits_fresh_adopt_request():
+    """A sensor 0x43 UL in ACTIVE state should produce a 0x74 DL whose
+    plaintext body is a fresh ADOPT_REQUEST (messageId=0x02, two ephemeral
+    pubkeys, networkId BE). Privates must be stored on the session for the
+    later ADOPT_RESPONSE round-trip."""
+    import nacl.bindings as nacl_bindings
+
+    from superlink.adopt import MSG_ADOPT_REQUEST
+    from superlink.decoder import build_frame, parse_frame, decrypt_frame
+
+    session = _active_session_for_adopt()
+
+    # Build a synthetic 0x43 UL from the sensor — encrypted body, counter=0.
+    ul_payload = b"\x43\x00\x00\x00"  # body content is irrelevant for the test
+    ul_mic = b"\x11\x22\x33\x44"
+    ul_raw = build_frame(0xE0, 0x43, SENSOR_MAC, 0x10, 0x20,
+                         ul_mic, ul_payload, session.session_key, counter=0)
+
+    _, tx_raw, dl_freq = session.handle_rx(ul_raw, ul_channel=1)
+    assert tx_raw is not None and dl_freq > 0
+
+    # Decrypt the DL frame and inspect the body. The gateway encrypted
+    # with counter=0 (first post-pair reply); pass dl_counter=0 to match.
+    tx_frame = parse_frame(tx_raw)
+    assert tx_frame.dctrl == 0x74
+    tx_frame = decrypt_frame(
+        tx_frame, session.session_key,
+        ul_counter_offset=tx_frame.seq_hi, dl_counter=0)
+    body = tx_frame.payload
+    assert len(body) == 70
+    assert body[0] == MSG_ADOPT_REQUEST                     # messageId 0x02
+    assert body[1] == 0x9C                                  # messageTag
+    assert int.from_bytes(body[66:], "big") == session.network_id  # 0x048F
+
+    # Privates were stored and match base*priv = the body's two pubkeys.
+    assert session._eph_priv_r is not None
+    assert session._eph_priv_o is not None
+    assert body[2:34] == nacl_bindings.crypto_scalarmult_base(
+        session._eph_priv_r)
+    assert body[34:66] == nacl_bindings.crypto_scalarmult_base(
+        session._eph_priv_o)
+
+
+def test_active_0x03_decodes_and_derives_addDevice_keys():
+    """A sensor 0x54 UL whose decrypted body is a 66-byte ADOPT_RESPONSE
+    should be parsed; gateway derives addDevice.key/fallbackKey via kdf_E
+    and zeroes the ephemeral privates."""
+    from superlink.adopt import MSG_ADOPT_RESPONSE, kdf_E
+    from superlink.decoder import build_frame
+
+    session = _active_session_for_adopt()
+    # Pretend send_pair_burst already ran: ephemerals stored.
+    session._eph_priv_r = bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+    )
+    session._eph_priv_o = bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe"
+    )
+
+    # Fabricate a sensor ADOPT_RESPONSE.
+    dev_pub = bytes.fromhex(
+        "8f0f12de419e0d8db5d7abd8aab7a6b5037c0be13c984bc8c93ae75c1438a120"
+    )
+    dev_fb_pub = bytes.fromhex(
+        "ef9a96027a8b842113c6f75d7f3f6107a531275b359a2dd107478dfaac0eac06"
+    )
+    body = bytes([MSG_ADOPT_RESPONSE, 0x9C]) + dev_pub + dev_fb_pub
+    assert len(body) == 66
+
+    # Wrap in a 0x54 UL frame (data direction). counter computed from
+    # seq_hi - ul_counter_offset = 1 - 0 = 1.
+    mic = b"\xAA\xBB\xCC\xDD"
+    raw = build_frame(0xE0, 0x54, SENSOR_MAC, 0x01, 0x00,
+                      mic, body, session.session_key, counter=1)
+
+    _, tx_raw, _ = session.handle_rx(raw, ul_channel=1)
+    # 0x03 path emits no DL reply.
+    assert tx_raw is None
+
+    # Keys derived correctly.
+    expected_key = kdf_E(bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+    ), dev_pub)
+    expected_fb = kdf_E(bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe"
+    ), dev_fb_pub)
+    assert session._derived_addDevice_key == expected_key
+    assert session._derived_addDevice_fb_key == expected_fb
+    # Ephemerals discarded after use — no reuse on next pair attempt.
+    assert session._eph_priv_r is None
+    assert session._eph_priv_o is None
