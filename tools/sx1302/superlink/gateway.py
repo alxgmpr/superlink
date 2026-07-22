@@ -236,51 +236,24 @@ class GatewaySession:
             self._eph_priv_r = None
             self._eph_priv_o = None
 
-            # Post-rotation burst on the same DL channel as the 0x43 we
-            # replied to. Three back-to-back 0x74 frames signal adoption
-            # complete. NN = mgmt_counter advances by 1 each frame.
+            # Adoption-confirm: a SINGLE 6-byte 0x74 `0e NN 0d 00 01 2c`
+            # frame. This is byte-exact ground truth from real-bridge
+            # pair5/pair6 keyhook captures — NOT the old 3-frame 09/0b/09
+            # burst (a Y4-mock artifact the sensor rejects, sending it back
+            # into the 0x43 retry loop). NN continues the DL-management
+            # counter; the frame's DL-data counter continues via
+            # _build_0x74_reply's _post_pair_* progression.
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
-            burst_bodies = []
-            for body_tmpl in (b"\x09", b"\x0b\x11\x01\x0d\x14", b"\x09"):
-                if not hasattr(self, "_mgmt_counter"):
-                    self._mgmt_counter = getattr(
-                        self, "mgmt_counter_start", 0x7c)
-                mgmt = self._mgmt_counter & 0xFF
-                self._mgmt_counter += 1
-                burst_bodies.append(body_tmpl[:1] + bytes([mgmt])
-                                    + body_tmpl[1:])
-
-            tx_frames = []
-            for body in burst_bodies:
-                self._post_pair_tx_seq_hi = getattr(
-                    self, "_post_pair_tx_seq_hi", 0) + 1
-                self._post_pair_tx_seq_lo = getattr(
-                    self, "_post_pair_tx_seq_lo", 0) + 1
-                self._post_pair_counter = getattr(
-                    self, "_post_pair_counter", -1) + 1
-                seq_hi = self._post_pair_tx_seq_hi & 0xFF
-                seq_lo = self._post_pair_tx_seq_lo & 0xFF
-                counter = self._post_pair_counter
-                header = (bytes([0xE0, 0x74]) + frame.mac
-                          + bytes([seq_hi, seq_lo]))
-                mic = compute_mic(header, body)
-                tx_frame = build_frame(
-                    0xE0, 0x74, frame.mac, seq_hi, seq_lo,
-                    mic, body, self.session_key, counter=counter,
-                )
-                tx_frames.append(tx_frame)
-                log.info(
-                    "post-rotation TX 0x74 (seq=%02X.%02X counter=%d body=%s)",
-                    seq_hi, seq_lo, counter, body.hex())
-            # Queue ALL 3 burst frames for the main loop to drain
-            # back-to-back in order (no scheduled-vs-immediate mixing — the
-            # sensor validates NN strictly, so out-of-order TX kills the
-            # adoption). Return no primary tx_data; the main loop's drain
-            # path handles the whole burst.
-            self._pending_tx_frames = list(zip(tx_frames,
-                                               [dl_freq] * len(tx_frames)))
-            return frame, None, 0
+            if not hasattr(self, "_mgmt_counter"):
+                self._mgmt_counter = getattr(self, "mgmt_counter_start", 0x7c)
+            mgmt = self._mgmt_counter & 0xFF
+            self._mgmt_counter += 1
+            confirm_body = bytes([0x0e, mgmt, 0x0d, 0x00, 0x01, 0x2c])
+            tx_frame = self._build_0x74_reply(frame.mac, confirm_body)
+            log.info("adoption-confirm TX 0x74 on %.1f MHz (body=%s)",
+                     dl_freq / 1e6, confirm_body.hex())
+            return frame, tx_frame, dl_freq
 
         # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74
         # `0b NN+1 11 01 0d 14`, 0x43 → 0x74 ADOPT_REQUEST. NN is a
