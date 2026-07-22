@@ -69,6 +69,29 @@ Default credentials are `ubnt` with the password shown in the device's local web
 ssh ubnt@<DEVICE_IP>
 ```
 
+## What actually worked (2026-07-22, after a bridge reset)
+
+- **Bridge real IP is `10.1.10.141`** (host subnet), NOT `10.1.1.141`. The old
+  `10.1.1.141` in older docs is stale — confirm the current `host` from the API
+  (`GET /proxy/protect/api/bridges` → `host` field).
+- Controller = the **UCG-Fiber console** at `10.1.1.1` (UniFi OS 5.1.26, Protect 7.1.87).
+  Root SSH to it via `~/.ssh/config` host `router` (key auth).
+- The `isSshEnabled` toggle exists **only on the internal `/proxy/protect/api/bridges/<id>`
+  path**, which requires a logged-in **session cookie + CSRF token**. A Protect
+  **Integration API key** (`X-API-KEY`, `/proxy/protect/integration/v1/...`) is read-only
+  for this purpose — it can enumerate bridges but its PATCH schema rejects `isSshEnabled`
+  ("must NOT have additional properties"). Root-on-console alone also does NOT get a
+  Protect session (internal `/api/` → 401 for API-key/Bearer/mTLS-direct-cert).
+- **Working method:** drive the user's already-authenticated browser session. From the
+  Protect/Network web UI (past the self-signed cert), `fetch('/proxy/protect/api/bridges',
+  {credentials:'include'})` returns 200 + an `x-csrf-token` response header; then
+  `PATCH /proxy/protect/api/bridges/<id>` and `PATCH /proxy/protect/api/nvr` with
+  `{"isSshEnabled":true}` and header `x-csrf-token`. Both return 200. **SSH came up
+  immediately — no device reboot required.**
+- Bridge id: `6a612ad103c80a03e4027261`, MAC `9041B23483DC`, name "USL Gateway".
+- SSH in: `ssh ubnt@10.1.10.141` (password = the `webpass`, baked into
+  `tools/keyhook/capture_key.sh`).
+
 ## Notes
 
 - The controller may **re-disable SSH on reprovisioning**. If SSH stops working after
