@@ -29,28 +29,38 @@ echo "=== SuperLink Session Key Capture (pre-built hook) ==="
 echo "Gateway: $GW_USER@$GW_IP   keyhook.so: $(file -b "$SCRIPT_DIR/keyhook.so")"
 echo
 
-echo "[1/4] Deploying pre-built keyhook.so..."
+# lorabrd is a procd service. Its invocation is fixed (from /etc/init.d/lorabr):
+#   chrt -r 50 /usr/sbin/lorabrd --syslog /etc/persistent/cfg/lorabr.json
+# procd respawns it on a bare `killall`, so we must `/etc/init.d/lorabr stop`
+# first (that disables respawn). The bridge's busybox has NO nohup/setsid, so we
+# detach the hooked process with a `( ... & )` subshell (orphan to init).
+LORABRD='chrt -r 50 /usr/sbin/lorabrd --syslog /etc/persistent/cfg/lorabr.json'
+
+echo "[1/3] Deploying pre-built keyhook.so..."
 eval $SCP "$SCRIPT_DIR/keyhook.so" "$GW_USER@$GW_IP:/tmp/keyhook.so"
-eval $SSH "chmod +x /tmp/keyhook.so && rm -f /tmp/keyhook.log"
 
-echo "[2/4] Stopping lorabrd..."
-LORABRD_CMD=$(eval $SSH "cat /proc/\$(pidof lorabrd)/cmdline 2>/dev/null | tr '\0' ' '" 2>/dev/null || echo "/usr/sbin/lorabrd")
-eval $SSH "killall lorabrd 2>/dev/null" || true
-sleep 1
-echo "  Original command: $LORABRD_CMD"
+echo "[2/3] Stop procd service + launch hooked lorabrd..."
+eval $SSH "'
+  chmod +x /tmp/keyhook.so; rm -f /tmp/keyhook.log /tmp/lorabrd_hooked.log
+  /etc/init.d/lorabr stop 2>/dev/null; sleep 1; killall -9 lorabrd 2>/dev/null; sleep 1
+  ( LD_PRELOAD=/tmp/keyhook.so KEYHOOK_OUT=/tmp/keyhook.log $LORABRD </dev/null >/tmp/lorabrd_hooked.log 2>&1 & )
+  sleep 2; echo \"  hooked lorabrd pid: \$(pidof lorabrd || echo FAILED)\"
+'"
 
-echo "[3/4] Restarting lorabrd with LD_PRELOAD hook..."
-eval $SSH "cd /tmp && LD_PRELOAD=/tmp/keyhook.so KEYHOOK_OUT=/tmp/keyhook.log nohup $LORABRD_CMD > /tmp/lorabrd_hooked.log 2>&1 &"
-echo "  Waiting for sensor reconnect (up to 30s)..."
-for i in $(seq 1 30); do
+echo "  Waiting for sensor re-handshake (up to 55s)..."
+for i in $(seq 1 55); do
     sleep 1
     KEY_COUNT=$(eval $SSH "grep -c '^KEY=' /tmp/keyhook.log 2>/dev/null" 2>/dev/null || echo "0")
-    if [ "$KEY_COUNT" -ge 2 ]; then echo "  Captured $KEY_COUNT keys!"; break; fi
+    if [ "$KEY_COUNT" -ge 2 ]; then echo "  Captured $KEY_COUNT KEY= lines!"; break; fi
     printf "."
 done
 echo
 
-echo "[4/4] Captured session keys:"
-eval $SSH "cat /tmp/keyhook.log 2>/dev/null"
+echo "[3/3] Captured session keys:"
+eval $SSH "grep -E '^(SHARED|KEY|OUT)=' /tmp/keyhook.log 2>/dev/null | sort -u"
 echo
-echo "To restore: ssh $GW_USER@$GW_IP 'killall lorabrd; /etc/init.d/lorabr start'"
+echo "Full log on bridge: /tmp/keyhook.log  (scp it to captures/live/)"
+echo "The hooked lorabrd is orphaned to init and NOT procd-managed — if it dies,"
+echo "the bridge loses LoRa until you restore. To restore the clean service"
+echo "(this RE-HANDSHAKES → new session key):"
+echo "  ssh $GW_USER@$GW_IP 'killall -9 lorabrd; /etc/init.d/lorabr start'"
