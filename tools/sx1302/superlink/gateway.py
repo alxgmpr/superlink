@@ -76,6 +76,9 @@ class GatewaySession:
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
         self.session_key: bytes | None = None
+        # Set once the ADOPT round-trip completes; thereafter the KDF context
+        # is the rotated addDevice.key and handshakes are operational reconnects.
+        self._adopted = False
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -253,6 +256,24 @@ class GatewaySession:
             tx_frame = self._build_0x74_reply(frame.mac, confirm_body)
             log.info("adoption-confirm TX 0x74 on %.1f MHz (body=%s)",
                      dl_freq / 1e6, confirm_body.hex())
+
+            # Rotate to operational mode. Post-adoption the sensor reconnects
+            # with a fresh 0x40→0x62→0x42→0x62 handshake and BOTH sides derive
+            # the session key with addDevice.key as the KDF context — verified
+            # against real-bridge ground truth (op key 9432ba8e, capture
+            # bridge_pair_keyhook_20260722.log). Swap in the rotated context,
+            # mint a fresh keypair for the reconnect, and drop back to
+            # BEACONING so the existing handshake path derives the operational
+            # session key correctly. (The confirm above is already encrypted
+            # under the OLD session key — the rotation only affects the next
+            # handshake.)
+            self._kdf_context = self._derived_addDevice_key
+            self._privkey, self._pubkey = generate_keypair()
+            self.state = State.BEACONING
+            self._adopted = True
+            log.info("adopted — rotated KDF context to addDevice.key %s; "
+                     "awaiting operational reconnect",
+                     self._derived_addDevice_key.hex())
             return frame, tx_frame, dl_freq
 
         # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74

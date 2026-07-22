@@ -132,3 +132,25 @@ def test_secretbox_wrong_key_fails():
 
     with pytest.raises(Exception):
         secretbox_decrypt(ciphertext, nonce, wrong_key)
+
+
+def test_operational_session_key_matches_bridge_ground_truth():
+    """Post-adoption operational session key = derive_session_key with
+    addDevice.key as the KDF context (not the pre-adoption pairing/kdf
+    context). Ground truth from the real bridge keyhook capture
+    captures/live/bridge_pair_keyhook_20260722.log (operational reconnect
+    of sensor 90:41:B2:2E:9A:53): the bridge derived operational key
+    9432ba8e... via blake2b32(shared || gw_pub || sensor_pub || addDevice.key).
+    """
+    from superlink.crypto import derive_session_key, compute_shared_secret
+    h = bytes.fromhex
+    gw_op_priv    = h("6b7e266b72f1faf97f731fe346a6aab72541503b60d0cf67c404601aedc46fb7")
+    sensor_op_pub = h("14b93c2ce18a94c74c6197327c5c9e0bef57bcc117bf684e2737eac5e93da006")
+    gw_op_pub     = h("5d1a395b0489244a6a5e11033ed2fd73a2337a3364648899101ea1b6530b0b58")
+    add_device_key= h("236f0651e06043c70d7c3ec468660c5628569b28ba59d1cca74e01d8adc46968")
+    expected      = "9432ba8ee9114dedc8370233f9a6fbc1cb66a33e4ccb9669cfe41601df6d3336"
+
+    shared = compute_shared_secret(gw_op_priv, sensor_op_pub)
+    key = derive_session_key(shared, gw_op_pub, sensor_op_pub,
+                             context=add_device_key)
+    assert key.hex() == expected
