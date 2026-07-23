@@ -67,6 +67,40 @@ Observed frame types by Dctrl:
 
 All observed data frames use Mctrl=0xE0 (SecureHeader).
 
+## Application-Layer Messages
+
+Once the LoRa frame is decrypted, the payload is an application message:
+`[messageId:1][messageTag:1][body…]`. The full `MessageId` enum, recovered
+from UniFi Protect's `messages.ts` (webpack module 41118), is:
+
+| ID | Hex | Name | Direction |
+|----|------|------|-----------|
+| 1 | `0x01` | REQUEST_STATUS_RESPONSE | device → gateway |
+| 2 | `0x02` | ADOPT_REQUEST | gateway → device |
+| 3 | `0x03` | ADOPT_RESPONSE | device → gateway |
+| 4 | `0x04` | PING_REQUEST | gateway → device |
+| 5 | `0x05` | PING_RESPONSE | device → gateway |
+| 6 | `0x06` | REBOOT | gateway → device |
+| 7 | `0x07` | FACTORY_RESET | gateway → device |
+| 8 | `0x08` | LOCATE | gateway → device |
+| 9 | `0x09` | DEVICE_INFO_REQUEST | gateway → device |
+| 10 | `0x0a` | DEVICE_INFO_REPORT | device → gateway |
+| 11 | `0x0b` | PROPERTY_REQUEST | gateway → device |
+| 12 | `0x0c` | PROPERTY_REPORT | device → gateway |
+| — | `0x0d` | *(undefined — gap in enum)* | — |
+| 14 | `0x0e` | PROPERTY_SET | gateway → device |
+| 15 | `0x0f` | FIRMWARE_UPDATE_START | gateway → device |
+| 16 | `0x10` | FIRMWARE_CHUNK_REQUEST | device → gateway |
+| 17 | `0x11` | FIRMWARE_CHUNK_RESPONSE | gateway → device |
+
+`FACTORY_RESET` (`0x07`) is what the controller sends over the air to remotely
+reset a sensor before re-adoption. `PING_REQUEST`/`PING_RESPONSE` (`0x04`/`0x05`)
+is the liveness keep-alive. `PROPERTY_REQUEST` (`0x0b`) does **not** validate
+property IDs — sending undefined IDs (0–255) is a memory-disclosure primitive.
+Full message encodings: [`docs/protocol/superlink_application_layer.md`](docs/protocol/superlink_application_layer.md).
+The end-to-end adoption/commit mechanism is documented in
+[`docs/protocol/adoption_commit_mechanism.md`](docs/protocol/adoption_commit_mechanism.md).
+
 ## Decrypted Payload (USL-Entry door sensor)
 
 Standard 5-byte UL payload:

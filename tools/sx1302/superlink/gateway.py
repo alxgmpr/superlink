@@ -54,10 +54,15 @@ class GatewaySession:
                  beacon_interval: float = 240.0,
                  kdf_context: bytes | None = None,
                  mgmt_counter_start: int = 0x7c,
-                 network_id: int = DEFAULT_NETWORK_ID):
+                 network_id: int = DEFAULT_NETWORK_ID,
+                 sweep=None):
         self.gw_mac = gw_mac
         self.pairing_key = pairing_key
         self.beacon_interval = beacon_interval
+        # Optional PROPERTY_REQUEST memory-disclosure sweep. When set, the
+        # gateway probes the adopted sensor on each 0x54 data-frame RX window.
+        self.sweep = sweep
+        self._sweep_tag = 0
         # keypair+0x30 context fed into the session-key KDF. Defaults to the
         # pairing_key; can be overridden to try values captured from a real
         # bridge (e.g. via tools/keyhook).
@@ -71,6 +76,22 @@ class GatewaySession:
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
         self.session_key: bytes | None = None
+        # Set once we OBSERVE the sensor commit (adopted-form 0x40 discovery
+        # `01ae94 8N 0000048f`); thereafter the KDF context is the primary
+        # addDevice.key and the handshake transport key is the fallbackKey.
+        self._adopted = False
+        # True after the ADOPT round-trip has produced (primary, fallback) keys
+        # but BEFORE the sensor has committed. We do NOT rotate keys yet — a
+        # non-committing sensor keeps handshaking under the pairing key/default
+        # context, so premature rotation would lock us out (the one-way-trap).
+        self._adopt_pending = False
+        # Transport key for the outer XSalsa20 of the 0x62/0x42 connect
+        # handshake (NOT the 0x40 discovery, which always uses the pairing key).
+        # Pre-adoption = pairing key; post-commit = the derived fallbackKey.
+        # Ground truth: captures/live/bridge_adopt_fresh_pass2 frames 48-59 use
+        # KEY=addDevice.fallbackKey for the reconnect handshake. See
+        # docs/protocol/adoption_commit_mechanism.md.
+        self._transport_key = pairing_key
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -184,8 +205,22 @@ class GatewaySession:
                                   ul_counter_offset=frame.seq_hi,
                                   dl_counter=0)
         else:
-            frame = decrypt_frame(frame, self.session_key,
-                                  ul_counter_offset=self._ul_counter_offset)
+            # 0x54/0x44 data frames: the nonce counter lives in a separate
+            # space from the handshake seq_hi, and solicited responses vs
+            # unsolicited telemetry use different counters. Find the counter
+            # whose plaintext MIC verifies (cryptographically certain) instead
+            # of the seq_hi-offset heuristic.
+            scan_c = self._scan_data_counter(frame)
+            if scan_c is not None:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=frame.seq_hi - scan_c)
+                log.info("data counter=%d (seq=%02X.%02X)",
+                         scan_c, frame.seq_hi, frame.seq_lo)
+            else:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=self._ul_counter_offset)
+                log.info("data counter SCAN-FAIL seq=%02X.%02X",
+                         frame.seq_hi, frame.seq_lo)
         log.info("RX dctrl=0x%02X %s seq=%02X.%02X %s",
                  frame.dctrl, format_mac(frame.mac),
                  frame.seq_hi, frame.seq_lo,
@@ -231,51 +266,60 @@ class GatewaySession:
             self._eph_priv_r = None
             self._eph_priv_o = None
 
-            # Post-rotation burst on the same DL channel as the 0x43 we
-            # replied to. Three back-to-back 0x74 frames signal adoption
-            # complete. NN = mgmt_counter advances by 1 each frame.
+            # Adoption-confirm: a SINGLE 6-byte 0x74 `0e NN 0d 00 01 2c`
+            # frame. This is byte-exact ground truth from real-bridge
+            # pair5/pair6 keyhook captures — NOT the old 3-frame 09/0b/09
+            # burst (a Y4-mock artifact the sensor rejects, sending it back
+            # into the 0x43 retry loop). NN continues the DL-management
+            # counter; the frame's DL-data counter continues via
+            # _build_0x74_reply's _post_pair_* progression.
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
-            burst_bodies = []
-            for body_tmpl in (b"\x09", b"\x0b\x11\x01\x0d\x14", b"\x09"):
-                if not hasattr(self, "_mgmt_counter"):
-                    self._mgmt_counter = getattr(
-                        self, "mgmt_counter_start", 0x7c)
-                mgmt = self._mgmt_counter & 0xFF
-                self._mgmt_counter += 1
-                burst_bodies.append(body_tmpl[:1] + bytes([mgmt])
-                                    + body_tmpl[1:])
+            # Commit ack: the real bridge answers ADOPT_RESPONSE with a single
+            # 0x63 REQUEST_STATUS_RESPONSE(status=OK) body `01 00` — verified
+            # ground truth from a fresh adoption capture
+            # (bridge_adopt_fresh_pass2_20260722.log frame 44). This is the
+            # MAC-layer ACK of the sensor's 0x54 ADOPT_RESPONSE; the sensor
+            # then commits and re-announces adopted-form 0x40.
+            confirm_body = bytes([0x01, 0x00])
+            # MAC-layer ACK of the sensor's 0x54 ADOPT_RESPONSE. Ground truth
+            # (bridge_adopt_fresh_pass2 frame 44): the 0x63 ACK ECHOES the acked
+            # frame's seq_hi and increments seq_lo by 1 (0x81 -> 0x82); the DL
+            # nonce counter follows the seq_hi-1 offset seen across the ADOPT
+            # region. Building it from our own independent counter (as
+            # _build_dl_reply does) leaves the ACK uncorrelated to the
+            # ADOPT_RESPONSE, so the sensor never sees its response acked and
+            # reverts to unadopted — the observed failure.
+            ack_seq_hi = frame.seq_hi
+            ack_seq_lo = (frame.seq_lo + 1) & 0xFF
+            ack_ctr = (frame.seq_hi - 1) & 0xFF
+            ack_header = (bytes([0xE0, 0x63]) + frame.mac
+                          + bytes([ack_seq_hi, ack_seq_lo]))
+            ack_mic = compute_mic(ack_header, confirm_body)
+            tx_frame = build_frame(
+                0xE0, 0x63, frame.mac, ack_seq_hi, ack_seq_lo,
+                ack_mic, confirm_body, self.session_key, counter=ack_ctr)
+            log.info("adoption commit-ack TX 0x63 seq=%02X.%02X ctr=%d on "
+                     "%.1f MHz (body=%s)", ack_seq_hi, ack_seq_lo, ack_ctr,
+                     dl_freq / 1e6, confirm_body.hex())
 
-            tx_frames = []
-            for body in burst_bodies:
-                self._post_pair_tx_seq_hi = getattr(
-                    self, "_post_pair_tx_seq_hi", 0) + 1
-                self._post_pair_tx_seq_lo = getattr(
-                    self, "_post_pair_tx_seq_lo", 0) + 1
-                self._post_pair_counter = getattr(
-                    self, "_post_pair_counter", -1) + 1
-                seq_hi = self._post_pair_tx_seq_hi & 0xFF
-                seq_lo = self._post_pair_tx_seq_lo & 0xFF
-                counter = self._post_pair_counter
-                header = (bytes([0xE0, 0x74]) + frame.mac
-                          + bytes([seq_hi, seq_lo]))
-                mic = compute_mic(header, body)
-                tx_frame = build_frame(
-                    0xE0, 0x74, frame.mac, seq_hi, seq_lo,
-                    mic, body, self.session_key, counter=counter,
-                )
-                tx_frames.append(tx_frame)
-                log.info(
-                    "post-rotation TX 0x74 (seq=%02X.%02X counter=%d body=%s)",
-                    seq_hi, seq_lo, counter, body.hex())
-            # Queue ALL 3 burst frames for the main loop to drain
-            # back-to-back in order (no scheduled-vs-immediate mixing — the
-            # sensor validates NN strictly, so out-of-order TX kills the
-            # adoption). Return no primary tx_data; the main loop's drain
-            # path handles the whole burst.
-            self._pending_tx_frames = list(zip(tx_frames,
-                                               [dl_freq] * len(tx_frames)))
-            return frame, None, 0
+            # Do NOT rotate keys yet. The sensor has all it needs to derive its
+            # own (primary, fallback) but has not committed. We drop to
+            # BEACONING and wait to OBSERVE the commit — the adopted-form 0x40
+            # discovery `01ae94 8N 0000048f` — before rotating. Rotating now
+            # (as prior code did) is the one-way trap: a non-committing sensor
+            # keeps handshaking under the pairing key/default context, and a
+            # rotated gateway can no longer answer it. The keys stay stashed in
+            # self._derived_addDevice_{key,fb_key}; the swap happens in
+            # _handle_beaconing's 0x40 handler on the adopted-form discovery.
+            self._adopt_pending = True
+            self._privkey, self._pubkey = generate_keypair()
+            self.state = State.BEACONING
+            log.info("ADOPT round-trip done; stashed primary=%s fallback=%s; "
+                     "awaiting adopted-form 0x40 (commit) before rotating",
+                     self._derived_addDevice_key[:8].hex(),
+                     self._derived_addDevice_fb_key[:8].hex())
+            return frame, tx_frame, dl_freq
 
         # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74
         # `0b NN+1 11 01 0d 14`, 0x43 → 0x74 ADOPT_REQUEST. NN is a
@@ -287,67 +331,231 @@ class GatewaySession:
         # docs/protocol/superlink_application_layer.md — fresh ephemeral X25519
         # keypairs per pair attempt, not the captured-pair4-bytes-with-masks
         # blind-search the prior code was doing.
-        if frame.dctrl in (0x53, 0x44, 0x43) and 1 <= ul_channel <= 8:
+        # Adoption — match the real bridge's MINIMAL flow (ground truth
+        # bridge_adopt_fresh_pass2_20260722.log): the bridge answers the
+        # sensor's first 0x53 mgmt poll with the ADOPT_REQUEST *directly*.
+        # There is NO pre-commit DEVICE_INFO_REQUEST (0x09) or PROPERTY_REQUEST
+        # (0x0b) — those exchanges happen only AFTER the sensor commits. The
+        # sensor then sends ADOPT_RESPONSE (0x54, handled above) and we ack
+        # with 0x63 01 00. We deliberately do NOT reply to pre-commit 0x44/0x43
+        # (the bridge doesn't either).
+        # Post-adoption: the sensor's 0x53 mgmt poll is its COMMAND WINDOW — the
+        # only point it listens for and acts on a request. Ground truth
+        # (bridge_adopt_fresh_pass2 frame 62) delivers DEVICE_INFO_REQUEST as the
+        # DL 0x74 reply to the post-commit 0x53 (seq_hi echoes the 0x53, seq_lo
+        # 0x81, ctr 0). Firing probes on 0x54 telemetry does nothing — the sensor
+        # sends those fire-and-forget and ignores replies to them.
+        if (frame.dctrl == 0x53 and 1 <= ul_channel <= 8
+                and self._adopted and self.sweep is not None):
+            body = self._next_probe_body()
+            if body is not None:
+                from .hal import DL_FREQ_HZ
+                dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                seq_hi = frame.seq_hi
+                seq_lo = 0x81
+                ctr = 0
+                header = (bytes([0xE0, 0x74]) + frame.mac
+                          + bytes([seq_hi, seq_lo]))
+                mic = compute_mic(header, body)
+                tx_frame = build_frame(
+                    0xE0, 0x74, frame.mac, seq_hi, seq_lo,
+                    mic, body, self.session_key, counter=ctr)
+                log.info("SWEEP cmd (reply to 0x53) -> %s seq=%02X.%02X ctr=%d "
+                         "body=%s on %.1f MHz", format_mac(frame.mac), seq_hi,
+                         seq_lo, ctr, body.hex(), dl_freq / 1e6)
+                return frame, tx_frame, dl_freq
+
+        if frame.dctrl == 0x53 and 1 <= ul_channel <= 8 and not self._adopted:
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
-
-            self._post_pair_tx_seq_hi = getattr(
-                self, "_post_pair_tx_seq_hi", 0) + 1
-            self._post_pair_tx_seq_lo = getattr(
-                self, "_post_pair_tx_seq_lo", 0) + 1
-            self._post_pair_counter = getattr(
-                self, "_post_pair_counter", -1) + 1
-            seq_hi = self._post_pair_tx_seq_hi & 0xFF
-            seq_lo = self._post_pair_tx_seq_lo & 0xFF
-            counter = self._post_pair_counter
-
-            # Per-session DL-management counter (position 1 of each reply
-            # body). Initialize on first use. The starting value is
-            # configurable via --mgmt-counter-start (default 0x7c matches
-            # pair4 capture); subsequent replies increment by 1.
+            if not _HAS_CRYPTO:
+                raise RuntimeError(
+                    "pysodium required for ADOPT_REQUEST keypair generation")
             if not hasattr(self, "_mgmt_counter"):
                 self._mgmt_counter = getattr(self, "mgmt_counter_start", 0x7c)
             mgmt = self._mgmt_counter & 0xFF
             self._mgmt_counter += 1
-
-            if frame.dctrl == 0x53:
-                body = bytes([0x09, mgmt])
-            elif frame.dctrl == 0x44:
-                body = bytes([0x0b, mgmt, 0x11, 0x01, 0x0d, 0x14])
-            else:  # 0x43 — emit a fresh ADOPT_REQUEST per Y5
-                if not _HAS_CRYPTO:
-                    raise RuntimeError(
-                        "pysodium required for ADOPT_REQUEST keypair generation")
-                # Fresh ephemeral keypair per pair attempt — never reuse.
-                # Stashed on `self` so the matching ADOPT_RESPONSE handler
-                # can derive the rotated persistent keys via kdf_E.
-                self._eph_priv_r = secrets.token_bytes(32)
-                self._eph_priv_o = secrets.token_bytes(32)
-                gw_pub = pysodium.crypto_scalarmult_curve25519_base(
-                    self._eph_priv_r)
-                gw_fb_pub = pysodium.crypto_scalarmult_curve25519_base(
-                    self._eph_priv_o)
-                body = encode_adopt_request(
-                    mgmt, gw_pub, gw_fb_pub, self.network_id)
-                log.info(
-                    "ADOPT_REQUEST tag=0x%02x gw_pub=%s gw_fb_pub=%s "
-                    "networkId=0x%x",
-                    mgmt, gw_pub.hex(), gw_fb_pub.hex(), self.network_id)
-
-            header = bytes([0xE0, 0x74]) + frame.mac + bytes([seq_hi, seq_lo])
-            mic = compute_mic(header, body)
-            tx_frame = build_frame(
-                0xE0, 0x74, frame.mac, seq_hi, seq_lo,
-                mic, body,
-                self.session_key, counter=counter,
-            )
-            log.info("TX 0x74 reply to 0x%02X on %.1f MHz "
-                     "(seq=%02X.%02X counter=%d body=%s)",
-                     frame.dctrl, dl_freq / 1e6, seq_hi, seq_lo,
-                     counter, body.hex())
+            # Fresh ephemeral keypair, stashed so the ADOPT_RESPONSE handler
+            # derives the rotated addDevice.key via kdf_E.
+            self._eph_priv_r = secrets.token_bytes(32)
+            self._eph_priv_o = secrets.token_bytes(32)
+            gw_pub = pysodium.crypto_scalarmult_curve25519_base(
+                self._eph_priv_r)
+            gw_fb_pub = pysodium.crypto_scalarmult_curve25519_base(
+                self._eph_priv_o)
+            body = encode_adopt_request(
+                mgmt, gw_pub, gw_fb_pub, self.network_id)
+            tx_frame = self._build_dl_reply(frame.mac, body, dctrl=0x74)
+            log.info("ADOPT_REQUEST (reply to 0x53) tag=0x%02x gw_pub=%s "
+                     "gw_fb_pub=%s networkId=0x%x on %.1f MHz",
+                     mgmt, gw_pub.hex(), gw_fb_pub.hex(), self.network_id,
+                     dl_freq / 1e6)
             return frame, tx_frame, dl_freq
 
+        # Sweep mode: ingest reports and DRIVE the exchange. The initial probe
+        # goes out in the 0x53 command window (above). To drain all ids we must
+        # sustain the ping-pong the way the bridge does — the sensor stays in
+        # command mode only while we keep sending it commands in the RX window
+        # that follows each of its response frames.
+        if self.sweep is not None and self._adopted and frame.payload:
+            self._ingest_app_report(frame.payload)
+            mid = frame.payload[0]
+            if 1 <= ul_channel <= 8:
+                from .hal import DL_FREQ_HZ
+                dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                # (1) Sustained exchange: a solicited report arrives on 0x44
+                # (DEVICE_INFO_REPORT 0x0a / PROPERTY_REPORT 0x0c). The sensor
+                # has an RX window open right after — send the next probe.
+                if frame.dctrl == 0x44 and (
+                        mid in (0x0a, 0x0c)
+                        or getattr(self.sweep, "sustain_on_any", False)):
+                    body = self._next_probe_body()
+                    if body is None and not self.sweep.done():
+                        from . import appmsg
+                        self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+                        body = appmsg.encode_ping_request(tag=self._sweep_tag)
+                    if body is not None:
+                        tx = self._build_command(
+                            frame.mac, body, frame.seq_hi + 1)
+                        log.info("SWEEP cmd (sustain <-0x44 seq=%02X) body=%s "
+                                 "on %.1f MHz", frame.seq_hi, body.hex(),
+                                 dl_freq / 1e6)
+                        return frame, tx, dl_freq
+                # (2) PING keep-alive: on plain 0x54 telemetry, nudge the sensor
+                # with a PING_REQUEST to try to hold the command session open
+                # (it echoes PING_RESPONSE). Only while there is still work.
+                if (frame.dctrl == 0x54 and mid == 0x0c
+                        and not self.sweep.done()):
+                    from . import appmsg
+                    self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+                    body = appmsg.encode_ping_request(tag=self._sweep_tag)
+                    tx = self._build_command(frame.mac, body, frame.seq_hi + 1)
+                    log.info("SWEEP ping keep-alive (<-0x54 seq=%02X) on "
+                             "%.1f MHz", frame.seq_hi, dl_freq / 1e6)
+                    return frame, tx, dl_freq
+            if self.sweep.done():
+                log.info("SWEEP complete: %s", self.sweep.summary())
+
         return frame, None, 0
+
+    def _next_probe_body(self) -> bytes | None:
+        """Next application-layer probe body, or None if no sweep / exhausted.
+
+        Order: one DEVICE_INFO_REQUEST first (to map the surface and learn the
+        property value-size map), then PROPERTY_REQUEST batches until the id
+        queue drains.
+        """
+        if self.sweep is None:
+            return None
+        from . import appmsg
+        self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+        # MessageSweep / PingProbe drive themselves via next_probe(tag).
+        if hasattr(self.sweep, "next_probe"):
+            return self.sweep.next_probe(self._sweep_tag)
+        # PropertySweep: DEVICE_INFO_REQUEST first (maps the surface + value-size
+        # map), then PROPERTY_REQUEST batches until the id queue drains.
+        if self.sweep.device_info is None:
+            return appmsg.encode_device_info_request(tag=self._sweep_tag)
+        batch = self.sweep.next_batch()
+        if not batch:
+            return None
+        return appmsg.encode_property_request(batch, tag=self._sweep_tag)
+
+    def _build_dl_reply(self, mac: bytes, body: bytes, dctrl: int = 0x74) -> bytes:
+        """Build an encrypted DL frame carrying an app-message body.
+
+        Continues the post-pairing seq/counter progression (shared DL-data
+        counter) so consecutive DL frames — 0x74 mgmt replies/probes and the
+        0x63 commit ack — stay in sequence for the sensor's nonce.
+        """
+        self._post_pair_tx_seq_hi = getattr(self, "_post_pair_tx_seq_hi", 0) + 1
+        self._post_pair_tx_seq_lo = getattr(self, "_post_pair_tx_seq_lo", 0) + 1
+        self._post_pair_counter = getattr(self, "_post_pair_counter", -1) + 1
+        seq_hi = self._post_pair_tx_seq_hi & 0xFF
+        seq_lo = self._post_pair_tx_seq_lo & 0xFF
+        counter = self._post_pair_counter
+        header = bytes([0xE0, dctrl]) + mac + bytes([seq_hi, seq_lo])
+        mic = compute_mic(header, body)
+        return build_frame(0xE0, dctrl, mac, seq_hi, seq_lo, mic, body,
+                           self.session_key, counter=counter)
+
+    def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
+        """0x74 DL reply (sweep probes / mgmt replies)."""
+        return self._build_dl_reply(mac, body, dctrl=0x74)
+
+    def _build_command(self, mac: bytes, body: bytes, seq_hi: int,
+                       seq_lo: int = 0x81, ctr: int = 0) -> bytes:
+        """Build a DL 0x74 command frame in the sensor's command-window format
+        (seq_lo 0x81, ctr 0) — the shape the sensor accepts for ADOPT_REQUEST
+        and DEVICE_INFO_REQUEST. Used to drive the sustained sweep exchange."""
+        seq_hi &= 0xFF
+        header = bytes([0xE0, 0x74]) + mac + bytes([seq_hi, seq_lo])
+        mic = compute_mic(header, body)
+        return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
+                           self.session_key, counter=ctr)
+
+    def _scan_data_counter(self, frame) -> int | None:
+        """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
+
+        The MIC is BLAKE2b-32 over header(10B) || 4 zero bytes || plaintext, so
+        for each candidate counter we decrypt and check the recomputed MIC
+        against the decrypted MIC. Returns the counter (0..63) or None.
+        """
+        if not _HAS_CRYPTO or not frame.encrypted or self.session_key is None:
+            return None
+        header = (bytes([frame.mctrl, frame.dctrl]) + frame.mac
+                  + bytes([frame.seq_hi, frame.seq_lo]))
+        ct = frame.encrypted
+        for c in range(0, 64):
+            nonce = build_nonce(frame.mctrl, frame.dctrl, frame.mac,
+                                frame.seq_hi, frame.seq_lo, c)
+            pt = pysodium.crypto_stream_xor(ct, len(ct), nonce, self.session_key)
+            if compute_mic(header, pt[4:]) == pt[:4]:
+                return c
+        return None
+
+    def _ingest_app_report(self, payload: bytes) -> None:
+        """Route a decrypted UL app message into the sweep controller."""
+        if self.sweep is None or not payload or len(payload) < 2:
+            return
+        from . import appmsg
+        # MessageSweep / PingProbe ingest the raw app message (matched by tag)
+        # and log any interesting response themselves.
+        if hasattr(self.sweep, "next_probe"):
+            n_before = len(self.sweep.findings)
+            self.sweep.ingest(payload)
+            log.info("SWEEP resp msgId=0x%02x tag=0x%02x body=%s",
+                     payload[0], payload[1], payload[2:].hex())
+            for f in self.sweep.findings[n_before:]:
+                log.warning("SWEEP FINDING %s", f)
+            return
+        msg_id = payload[0]
+        if msg_id == appmsg.MessageId.DEVICE_INFO_REPORT:
+            try:
+                report = appmsg.decode_message(payload)
+            except ValueError as exc:
+                log.warning("bad DEVICE_INFO_REPORT: %s", exc)
+                return
+            self.sweep.set_device_info(report)
+            log.info("SWEEP device_info: type=0x%04x fw=%s hw=%d "
+                     "anonId=%s supportedMsgs=%s supportedProps=%s",
+                     report["deviceType"], report["fwVersion"],
+                     report["hardwareRevision"],
+                     report["anonymousDeviceId"].hex(),
+                     report["supportedMessageIds"],
+                     [p["propertyId"] for p in report["supportedProperties"]])
+        elif msg_id == appmsg.MessageId.PROPERTY_REPORT:
+            try:
+                report = appmsg.decode_message(payload, sizes=self.sweep.sizes)
+            except ValueError as exc:
+                log.warning("bad PROPERTY_REPORT: %s", exc)
+                return
+            n_before = len(self.sweep.findings)
+            self.sweep.record_report(report)
+            for f in self.sweep.findings[n_before:]:
+                log.warning("SWEEP FINDING id=%d (%s) ch=%s value=%s reasons=%s",
+                            f["propertyId"], f["name"], f["channel"],
+                            f["value"].hex(), f["reasons"])
 
     def _handle_beaconing(self, frame: SuperLinkFrame, ul_channel: int = 0
                           ) -> tuple[SuperLinkFrame | None, bytes | None, int]:
@@ -365,8 +573,33 @@ class GatewaySession:
             frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
             if frame.payload and len(frame.payload) >= 2 and frame.payload[0] == 0x01:
                 self.sensor_mac = frame.mac
-                log.info("DISCOVERY from %s ch=%d payload=%s",
-                         format_mac(frame.mac), ul_channel, frame.payload.hex())
+                # Adopted-form discovery carries a non-zero networkId trailer
+                # (`01ae94 8N 0000048f`); unadopted-form is `01ae94 NN 00000000`.
+                # The non-zero networkId is the reliable discriminator (byte 3's
+                # high bit is set on some unadopted forms too).
+                adopted_form = (len(frame.payload) >= 8
+                                and frame.payload[4:8] != b'\x00\x00\x00\x00')
+                log.info("DISCOVERY from %s ch=%d payload=%s%s",
+                         format_mac(frame.mac), ul_channel, frame.payload.hex(),
+                         " [ADOPTED-FORM]" if adopted_form else "")
+
+                # Commit observed: the sensor accepted our adoption and is now
+                # reconnecting. Rotate to operational keys — session KDF context
+                # = primary addDevice.key, handshake transport key = fallbackKey
+                # (ground truth: the reconnect 0x62/0x42 are encrypted with the
+                # fallbackKey, not the pairing key). Only now is rotation safe.
+                if (adopted_form and self._adopt_pending and not self._adopted
+                        and self._derived_addDevice_key
+                        and self._derived_addDevice_fb_key):
+                    self._kdf_context = self._derived_addDevice_key
+                    self._transport_key = self._derived_addDevice_fb_key
+                    self._adopted = True
+                    self._adopt_pending = False
+                    self._privkey, self._pubkey = generate_keypair()
+                    log.info("*** COMMIT OBSERVED *** rotated: KDF ctx=%s "
+                             "transport(fallbackKey)=%s",
+                             self._kdf_context[:8].hex(),
+                             self._transport_key[:8].hex())
 
                 # Build 0x62 ConnectionRsp on paired DL channel
                 # dctrl=0x62: lower 3 bits = 2 → connection handler (sub_524ac)
@@ -395,7 +628,7 @@ class GatewaySession:
                         0xE0, 0x62, frame.mac,
                         self._tx_seq_hi, self._tx_seq_lo,
                         mic, inner_payload,
-                        self.pairing_key, counter=0,
+                        self._transport_key, counter=0,
                     )
                     log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, pubkey=%s...)",
                              format_mac(frame.mac), dl_freq / 1e6, len(tx_frame),
@@ -407,10 +640,11 @@ class GatewaySession:
         elif frame.dctrl == 0x42:
             # ConnectionChallenge — extract sensor's DH pubkey and establish session
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
-            frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
-            log.info("0x42 PT (%dB): %s",
-                     len(frame.payload) if frame.payload else 0,
-                     frame.payload.hex() if frame.payload else "<empty>")
+            # Transport key: pairing key pre-adoption, fallbackKey post-commit.
+            frame = decrypt_frame(frame, self._transport_key, ul_counter_offset=frame.seq_hi)
+            log.debug("0x42 PT (%dB): %s",
+                      len(frame.payload) if frame.payload else 0,
+                      frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
                 log.warning("ConnectionChallenge too short: %d bytes",
                             len(frame.payload) if frame.payload else 0)
@@ -448,15 +682,6 @@ class GatewaySession:
                 shared, self._pubkey, self._remote_pubkey,
                 context=self._kdf_context,
             )
-            # FULL DEBUG DUMP — temp instrumentation for offline KDF analysis.
-            log.info("DBG gw_priv=%s gw_pub=%s sensor_pub=%s shared=%s session_key=%s kdf_ctx=%s",
-                     self._privkey.hex(), self._pubkey.hex(),
-                     self._remote_pubkey.hex(), shared.hex(),
-                     self.session_key.hex(), self._kdf_context.hex())
-            log.info("DBG blob_ct=%s 0x42_frame_seq=%02X.%02X mac=%s",
-                     bytes(frame.payload[35:45]).hex(),
-                     frame.seq_hi, frame.seq_lo,
-                     format_mac(frame.mac))
             self._ul_counter_offset = frame.seq_hi
             self.state = State.ACTIVE
             log.info("Session key derived (kdf_ctx=%s...)",
@@ -484,7 +709,8 @@ class GatewaySession:
             # Inner 16-byte plaintext (per real-bridge capture):
             #   gw_mac (6B) || sensor_mac (6B) || u32 (4B — echoed from 0x42)
             # XSalsa20 with session_key + 24-byte zero nonce, stamped with "01 03".
-            # Outer XSalsa20 uses pairing_key.
+            # Outer XSalsa20 uses the transport key (pairing key pre-adoption,
+            # fallbackKey post-commit).
             if 1 <= ul_channel <= 8:
                 dl_freq = DL_FREQ_HZ[ul_channel - 1]
                 self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
@@ -511,13 +737,13 @@ class GatewaySession:
                     0xE0, 0x62, frame.mac,
                     self._tx_seq_hi, self._tx_seq_lo,
                     mic, challenge_rsp,
-                    self.pairing_key, counter=0,
+                    self._transport_key, counter=0,
                 )
                 log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz "
                          "(%d bytes outer, 16B inner encrypted)",
                          format_mac(frame.mac), dl_freq / 1e6, len(tx_frame))
-                log.info("  inner plaintext: %s", inner_plaintext.hex())
-                log.info("  inner encrypted: %s", encrypted_inner.hex())
+                log.debug("  inner plaintext: %s", inner_plaintext.hex())
+                log.debug("  inner encrypted: %s", encrypted_inner.hex())
                 return frame, tx_frame, dl_freq
 
             return frame, None, 0
@@ -569,6 +795,30 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "of 0x53/0x44/0x43 reply bodies). Default 0x7c matches pair4 "
              "real-bridge capture. Increments by 1 per reply.",
     )
+    parser.add_argument(
+        "--sweep", nargs="?", const="undefined", metavar="IDS",
+        help="Enable PROPERTY_REQUEST memory-disclosure sweep of the adopted "
+             "sensor. Optional IDS selects which property ids to probe: "
+             "'undefined' (default — 0,18,43-255, the payoff set), 'all' "
+             "(0-255), or an explicit list like '0,18,43-64'. Probes are sent "
+             "on 0x54 data-frame RX windows; adoption is untouched.",
+    )
+    parser.add_argument(
+        "--sweep-batch", type=int, default=8, metavar="N",
+        help="Property ids per PROPERTY_REQUEST probe (default 8).",
+    )
+    parser.add_argument(
+        "--msg-sweep", nargs="?", const="undefined", metavar="IDS",
+        help="Enable MESSAGE-ID sweep: send each message id as [id][tag] and "
+             "record the response. IDS: 'undefined' (default — 0x00,0x0d,"
+             "0x12-0xff, skipping reboot/reset/adopt), 'all', or an explicit "
+             "list. Mutually exclusive with --sweep.",
+    )
+    parser.add_argument(
+        "--ping-probe", action="store_true",
+        help="Enable PING over-read probe: PING_REQUEST with varying data "
+             "lengths, flag any PING_RESPONSE longer than sent (Heartbleed).",
+    )
     return parser.parse_args(argv)
 
 
@@ -601,6 +851,33 @@ def main():
                   file=sys.stderr)
             sys.exit(1)
 
+    sweep = None
+    if args.msg_sweep:
+        from .sweep import MessageSweep, parse_msg_id_spec
+        try:
+            ids = parse_msg_id_spec(args.msg_sweep)
+        except ValueError as e:
+            print(f"Error: invalid --msg-sweep IDS: {e}", file=sys.stderr)
+            sys.exit(1)
+        sweep = MessageSweep(ids=ids)
+        log.info("MESSAGE-ID sweep enabled: %d ids (%s)", len(ids),
+                 ",".join(f"0x{i:02x}" for i in ids[:12])
+                 + (",…" if len(ids) > 12 else ""))
+    elif args.ping_probe:
+        from .sweep import PingProbe
+        sweep = PingProbe()
+        log.info("PING over-read probe enabled: lengths %s", sweep._queue)
+    elif args.sweep:
+        from .sweep import PropertySweep, parse_id_spec
+        try:
+            ids = parse_id_spec(args.sweep)
+        except ValueError as e:
+            print(f"Error: invalid --sweep IDS: {e}", file=sys.stderr)
+            sys.exit(1)
+        sweep = PropertySweep(ids=ids, batch_size=args.sweep_batch)
+        log.info("PROPERTY_REQUEST sweep enabled: %d ids, batch=%d",
+                 len(ids), args.sweep_batch)
+
     session = GatewaySession(
         gw_mac=gw_mac,
         pairing_key=bytes.fromhex(
@@ -609,6 +886,7 @@ def main():
         beacon_interval=args.beacon_interval,
         kdf_context=kdf_context,
         mgmt_counter_start=args.mgmt_counter_start,
+        sweep=sweep,
     )
 
     # CSV logging
