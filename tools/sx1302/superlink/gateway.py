@@ -940,9 +940,16 @@ def main():
                     if args.tx_delay:
                         tx_ts = pkt.timestamp_us + args.tx_delay
                     t_pre_tx = time.monotonic()
-                    hal.send(tx_freq, tx_data, bandwidth=BW_500KHZ,
-                             tx_timestamp_us=tx_ts,
-                             invert_pol=args.invert_iq)
+                    try:
+                        hal.send(tx_freq, tx_data, bandwidth=BW_500KHZ,
+                                 tx_timestamp_us=tx_ts,
+                                 invert_pol=args.invert_iq)
+                    except ValueError as exc:
+                        # A crafted/fuzz frame can exceed the 256B PHY limit —
+                        # skip it rather than killing the gateway mid-sweep.
+                        log.warning("TX skipped (%d bytes): %s",
+                                    len(tx_data), exc)
+                        continue
                     t_post_tx = time.monotonic()
                     mode = f"scheduled +{args.tx_delay}us" if tx_ts else "immediate"
                     log.info("TX %s: process=%.1fms send=%.1fms",
