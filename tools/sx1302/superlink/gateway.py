@@ -197,13 +197,25 @@ class GatewaySession:
             frame = decrypt_frame(frame, self.pairing_key,
                                   ul_counter_offset=frame.seq_hi)
         elif frame.dctrl in (0x53, 0x43):
-            # dl_counter=0 forces counter=0 regardless of the DCTRL_TABLE
-            # direction label (decoder currently marks 0x43/0x53 as DL;
-            # empirically we receive them UL from the sensor, and the
-            # real bridge capture shows counter=0 for both).
-            frame = decrypt_frame(frame, self.session_key,
-                                  ul_counter_offset=frame.seq_hi,
-                                  dl_counter=0)
+            # Management frames use counter=0 during adoption, but the sensor's
+            # mgmt-nonce counter ADVANCES once a command session is active (e.g.
+            # after FIRMWARE_UPDATE_START). Hardcoding counter=0 makes every
+            # post-UPDATE_START 0x53 decrypt to garbage — which is exactly why
+            # FIRMWARE_CHUNK_REQUEST was never recognized (it was there, just
+            # mis-decrypted). MIC-scan the counter (cryptographically certain);
+            # clean frames still resolve to counter 0.
+            scan_c = self._scan_data_counter(frame)
+            if scan_c is not None:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=frame.seq_hi - scan_c)
+                log.debug("0x%02X counter=%d (seq=%02X.%02X)", frame.dctrl,
+                          scan_c, frame.seq_hi, frame.seq_lo)
+            else:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=frame.seq_hi,
+                                      dl_counter=0)
+                log.info("0x%02X counter SCAN-FAIL seq=%02X.%02X (garbage?)",
+                         frame.dctrl, frame.seq_hi, frame.seq_lo)
         else:
             # 0x54/0x44 data frames: the nonce counter lives in a separate
             # space from the handshake seq_hi, and solicited responses vs
@@ -347,7 +359,26 @@ class GatewaySession:
         # sends those fire-and-forget and ignores replies to them.
         if (frame.dctrl == 0x53 and 1 <= ul_channel <= 8
                 and self._adopted and self.sweep is not None):
+            # Ingest whatever the sensor put in its command-window poll so the
+            # sweep controller can react (e.g. OtaPush sees a FIRMWARE_CHUNK_
+            # REQUEST that arrived on 0x53 rather than 0x44).
+            if frame.payload:
+                self._ingest_app_report(frame.payload)
             body = self._next_probe_body()
+            # Sustain the command window. The real bridge NEVER goes silent
+            # mid-session (decoded ground truth: it continuously drives 0x53/
+            # 0x74/0x54/0x44/0x63). If we have no queued probe but the sweep is
+            # still working (e.g. OtaPush entered OTA mode and is waiting for the
+            # sensor's FIRMWARE_CHUNK_REQUEST), send a PING keep-alive so the
+            # sensor keeps its command window open and gets a TX slot to advance
+            # — going silent here times out the exchange (the OTA-push stall).
+            if body is None and not self.sweep.done():
+                from . import appmsg
+                self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+                body = appmsg.encode_ping_request(tag=self._sweep_tag)
+                keepalive = True
+            else:
+                keepalive = False
             if body is not None:
                 from .hal import DL_FREQ_HZ
                 dl_freq = DL_FREQ_HZ[ul_channel - 1]
@@ -360,10 +391,17 @@ class GatewaySession:
                 tx_frame = build_frame(
                     0xE0, 0x74, frame.mac, seq_hi, seq_lo,
                     mic, body, self.session_key, counter=ctr)
-                log.info("SWEEP cmd (reply to 0x53) -> %s seq=%02X.%02X ctr=%d "
-                         "body=%s on %.1f MHz", format_mac(frame.mac), seq_hi,
+                log.info("SWEEP %s (reply to 0x53) -> %s seq=%02X.%02X ctr=%d "
+                         "body=%s on %.1f MHz",
+                         "keepalive" if keepalive else "cmd",
+                         format_mac(frame.mac), seq_hi,
                          seq_lo, ctr, body.hex(), dl_freq / 1e6)
                 return frame, tx_frame, dl_freq
+            # Payload already ingested above; don't fall through to the lower
+            # ingest block (would double-count). Nothing more to send.
+            if self.sweep.done():
+                log.info("SWEEP complete: %s", self.sweep.summary())
+            return frame, None, 0
 
         if frame.dctrl == 0x53 and 1 <= ul_channel <= 8 and not self._adopted:
             from .hal import DL_FREQ_HZ
