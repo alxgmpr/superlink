@@ -626,9 +626,9 @@ class GatewaySession:
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             # Transport key: pairing key pre-adoption, fallbackKey post-commit.
             frame = decrypt_frame(frame, self._transport_key, ul_counter_offset=frame.seq_hi)
-            log.info("0x42 PT (%dB): %s",
-                     len(frame.payload) if frame.payload else 0,
-                     frame.payload.hex() if frame.payload else "<empty>")
+            log.debug("0x42 PT (%dB): %s",
+                      len(frame.payload) if frame.payload else 0,
+                      frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
                 log.warning("ConnectionChallenge too short: %d bytes",
                             len(frame.payload) if frame.payload else 0)
@@ -666,15 +666,6 @@ class GatewaySession:
                 shared, self._pubkey, self._remote_pubkey,
                 context=self._kdf_context,
             )
-            # FULL DEBUG DUMP — temp instrumentation for offline KDF analysis.
-            log.info("DBG gw_priv=%s gw_pub=%s sensor_pub=%s shared=%s session_key=%s kdf_ctx=%s",
-                     self._privkey.hex(), self._pubkey.hex(),
-                     self._remote_pubkey.hex(), shared.hex(),
-                     self.session_key.hex(), self._kdf_context.hex())
-            log.info("DBG blob_ct=%s 0x42_frame_seq=%02X.%02X mac=%s",
-                     bytes(frame.payload[35:45]).hex(),
-                     frame.seq_hi, frame.seq_lo,
-                     format_mac(frame.mac))
             self._ul_counter_offset = frame.seq_hi
             self.state = State.ACTIVE
             log.info("Session key derived (kdf_ctx=%s...)",
@@ -735,8 +726,8 @@ class GatewaySession:
                 log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz "
                          "(%d bytes outer, 16B inner encrypted)",
                          format_mac(frame.mac), dl_freq / 1e6, len(tx_frame))
-                log.info("  inner plaintext: %s", inner_plaintext.hex())
-                log.info("  inner encrypted: %s", encrypted_inner.hex())
+                log.debug("  inner plaintext: %s", inner_plaintext.hex())
+                log.debug("  inner encrypted: %s", encrypted_inner.hex())
                 return frame, tx_frame, dl_freq
 
             return frame, None, 0
