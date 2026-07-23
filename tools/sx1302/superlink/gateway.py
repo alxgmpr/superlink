@@ -205,8 +205,22 @@ class GatewaySession:
                                   ul_counter_offset=frame.seq_hi,
                                   dl_counter=0)
         else:
-            frame = decrypt_frame(frame, self.session_key,
-                                  ul_counter_offset=self._ul_counter_offset)
+            # 0x54/0x44 data frames: the nonce counter lives in a separate
+            # space from the handshake seq_hi, and solicited responses vs
+            # unsolicited telemetry use different counters. Find the counter
+            # whose plaintext MIC verifies (cryptographically certain) instead
+            # of the seq_hi-offset heuristic.
+            scan_c = self._scan_data_counter(frame)
+            if scan_c is not None:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=frame.seq_hi - scan_c)
+                log.info("data counter=%d (seq=%02X.%02X)",
+                         scan_c, frame.seq_hi, frame.seq_lo)
+            else:
+                frame = decrypt_frame(frame, self.session_key,
+                                      ul_counter_offset=self._ul_counter_offset)
+                log.info("data counter SCAN-FAIL seq=%02X.%02X",
+                         frame.seq_hi, frame.seq_lo)
         log.info("RX dctrl=0x%02X %s seq=%02X.%02X %s",
                  frame.dctrl, format_mac(frame.mac),
                  frame.seq_hi, frame.seq_lo,
@@ -325,6 +339,32 @@ class GatewaySession:
         # sensor then sends ADOPT_RESPONSE (0x54, handled above) and we ack
         # with 0x63 01 00. We deliberately do NOT reply to pre-commit 0x44/0x43
         # (the bridge doesn't either).
+        # Post-adoption: the sensor's 0x53 mgmt poll is its COMMAND WINDOW — the
+        # only point it listens for and acts on a request. Ground truth
+        # (bridge_adopt_fresh_pass2 frame 62) delivers DEVICE_INFO_REQUEST as the
+        # DL 0x74 reply to the post-commit 0x53 (seq_hi echoes the 0x53, seq_lo
+        # 0x81, ctr 0). Firing probes on 0x54 telemetry does nothing — the sensor
+        # sends those fire-and-forget and ignores replies to them.
+        if (frame.dctrl == 0x53 and 1 <= ul_channel <= 8
+                and self._adopted and self.sweep is not None):
+            body = self._next_probe_body()
+            if body is not None:
+                from .hal import DL_FREQ_HZ
+                dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                seq_hi = frame.seq_hi
+                seq_lo = 0x81
+                ctr = 0
+                header = (bytes([0xE0, 0x74]) + frame.mac
+                          + bytes([seq_hi, seq_lo]))
+                mic = compute_mic(header, body)
+                tx_frame = build_frame(
+                    0xE0, 0x74, frame.mac, seq_hi, seq_lo,
+                    mic, body, self.session_key, counter=ctr)
+                log.info("SWEEP cmd (reply to 0x53) -> %s seq=%02X.%02X ctr=%d "
+                         "body=%s on %.1f MHz", format_mac(frame.mac), seq_hi,
+                         seq_lo, ctr, body.hex(), dl_freq / 1e6)
+                return frame, tx_frame, dl_freq
+
         if frame.dctrl == 0x53 and 1 <= ul_channel <= 8 and not self._adopted:
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
@@ -352,22 +392,14 @@ class GatewaySession:
                      dl_freq / 1e6)
             return frame, tx_frame, dl_freq
 
-        # Sweep mode (post-adoption): capture any report, and use the sensor's
-        # data-frame RX window to send the next PROPERTY_REQUEST probe. Gated
-        # to 0x54 data frames so the adoption handshake above is never touched.
+        # Sweep mode: ingest any report the sensor sends (telemetry or the
+        # response to a command-window probe). Commands themselves are delivered
+        # in the 0x53 command window above — NOT on 0x54 telemetry, which the
+        # sensor sends fire-and-forget and does not act on replies to.
         if self.sweep is not None:
             self._ingest_app_report(frame.payload)
-            if frame.dctrl == 0x54 and 1 <= ul_channel <= 8:
-                body = self._next_probe_body()
-                if body is not None:
-                    from .hal import DL_FREQ_HZ
-                    dl_freq = DL_FREQ_HZ[ul_channel - 1]
-                    tx_frame = self._build_0x74_reply(frame.mac, body)
-                    log.info("SWEEP probe -> %s on %.1f MHz body=%s",
-                             format_mac(frame.mac), dl_freq / 1e6, body.hex())
-                    return frame, tx_frame, dl_freq
-                if self.sweep.done():
-                    log.info("SWEEP complete: %s", self.sweep.summary())
+            if self.sweep.done():
+                log.info("SWEEP complete: %s", self.sweep.summary())
 
         return frame, None, 0
 
@@ -411,6 +443,26 @@ class GatewaySession:
     def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
         """0x74 DL reply (sweep probes / mgmt replies)."""
         return self._build_dl_reply(mac, body, dctrl=0x74)
+
+    def _scan_data_counter(self, frame) -> int | None:
+        """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
+
+        The MIC is BLAKE2b-32 over header(10B) || 4 zero bytes || plaintext, so
+        for each candidate counter we decrypt and check the recomputed MIC
+        against the decrypted MIC. Returns the counter (0..63) or None.
+        """
+        if not _HAS_CRYPTO or not frame.encrypted or self.session_key is None:
+            return None
+        header = (bytes([frame.mctrl, frame.dctrl]) + frame.mac
+                  + bytes([frame.seq_hi, frame.seq_lo]))
+        ct = frame.encrypted
+        for c in range(0, 64):
+            nonce = build_nonce(frame.mctrl, frame.dctrl, frame.mac,
+                                frame.seq_hi, frame.seq_lo, c)
+            pt = pysodium.crypto_stream_xor(ct, len(ct), nonce, self.session_key)
+            if compute_mic(header, pt[4:]) == pt[:4]:
+                return c
+        return None
 
     def _ingest_app_report(self, payload: bytes) -> None:
         """Route a decrypted UL app message into the sweep controller."""

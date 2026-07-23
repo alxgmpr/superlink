@@ -78,18 +78,30 @@ def test_build_0x74_reply_roundtrip():
     assert f.payload == body
 
 
-def test_data_frame_triggers_probe_tx():
-    """A 0x54 data frame (post-adoption RX window) elicits a DL probe that
-    decrypts to a DEVICE_INFO_REQUEST."""
+def test_0x53_command_window_triggers_probe_tx():
+    """Post-adoption, the sensor's 0x53 mgmt poll is its command window. A 0x53
+    UL elicits a DL 0x74 probe (seq_hi echoes the 0x53, seq_lo 0x81, ctr 0) that
+    decrypts to a DEVICE_INFO_REQUEST. Ground truth: bridge_adopt_fresh_pass2
+    frame 62. Probes are NOT fired on 0x54 telemetry (fire-and-forget)."""
     from superlink.decoder import build_frame, parse_frame, decrypt_frame
     s = _active_session_with_sweep(PropertySweep(ids=[43]))
+    s._adopted = True  # command window only opens post-commit
     s._ul_counter_offset = 0
-    raw = build_frame(0xE0, 0x54, SENSOR_MAC, 0x00, 0x00,
-                      b"\x00\x00\x00\x00", b"\x0c\x00",
-                      s.session_key, counter=0)
-    frame, tx_data, tx_freq = s.handle_rx(raw, ul_channel=1)
+    # 0x54 telemetry must NOT elicit a probe now.
+    raw54 = build_frame(0xE0, 0x54, SENSOR_MAC, 0x02, 0x00,
+                        b"\x00\x00\x00\x00", b"\x0c\x00",
+                        s.session_key, counter=2)
+    _, tx54, _ = s.handle_rx(raw54, ul_channel=1)
+    assert tx54 is None
+    # 0x53 command window DOES elicit the DEVICE_INFO_REQUEST probe.
+    raw53 = build_frame(0xE0, 0x53, SENSOR_MAC, 0x01, 0x30,
+                        b"\x00\x00\x00\x00", b"\x01\x00",
+                        s.session_key, counter=0)
+    frame, tx_data, tx_freq = s.handle_rx(raw53, ul_channel=1)
     assert tx_data is not None and tx_freq > 0
-    f = decrypt_frame(parse_frame(tx_data), s.session_key, dl_counter=0)
+    tf = parse_frame(tx_data)
+    assert tf.dctrl == 0x74 and tf.seq_hi == 0x01 and tf.seq_lo == 0x81
+    f = decrypt_frame(tf, s.session_key, dl_counter=0)
     assert f.payload[0] == appmsg.MessageId.DEVICE_INFO_REQUEST
 
 
