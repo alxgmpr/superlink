@@ -180,6 +180,98 @@ class PingProbe:
                 "results": len(self.results), "findings": len(self.findings)}
 
 
+def build_fuzz_corpus() -> list:
+    """Crafted app-message bodies targeting the sensor's message parser, below
+    the well-behaved app API. Each is `[msgId][tag=0][payload]`; the harness
+    patches byte 1 with a live tag so responses correlate.
+
+    Ordered least→most aggressive (safe reads first, buffer-overflow attempts
+    last) since a bad case can crash/brick the single sensor.
+    """
+    T = 0x00
+    cases: list[tuple[str, bytes]] = []
+
+    def add(name, body):
+        cases.append((name, bytes(body)))
+
+    # --- length-field OVER-READ: the payoff case ---------------------------
+    # PROPERTY_SET dynamic value = [0e][tag][id][channel][len][value…]. We send
+    # a big `len` but only a couple value bytes. If the firmware copies `len`
+    # bytes without bounding to the received frame, it over-reads adjacent
+    # RX-buffer/stack memory and — if it stores + echoes the value in the
+    # PROPERTY_REPORT confirmation — leaks that memory to us. Disclosure with
+    # no SWD needed.
+    for pid in (0x01, 0x0d, 0x0f, 0x20, 0x2a):
+        for claim in (0x10, 0x20, 0x40, 0x80, 0xf0):
+            add(f"pset-overread id=0x{pid:02x} len=0x{claim:02x}",
+                [0x0e, T, pid, 0x00, claim, 0xAA, 0xBB])
+    # PROPERTY_REPORT/SET with a truncated trailing entry (missing value bytes).
+    add("pset-truncated-entry", [0x0e, T, 0x0d, 0x00])
+
+    # --- oversized / boundary (buffer overflow attempts) -------------------
+    for n in (0xEE, 0xEF, 0xF4):                       # PING past the 239 cap
+        add(f"ping-{n:#x}", [0x04, T] + [0xC0 + (i & 0xF) for i in range(n)])
+    add("undef-0x0d-bigbody", [0x0d, T] + [0x55] * 0x40)
+    add("undef-0x00-bigbody", [0x00, T] + [0x66] * 0x40)
+    add("preq-200ids", [0x0b, T] + list(range(200)))
+    add("dinfo-report-wrongdir", [0x0a, T, 0x00])      # 0a is device→ctl
+    add("fw-chunk-resp-garbage", [0x11, T] + [0] * 8 + [0x90] * 16)
+    add("pset-oversize-value", [0x0e, T, 0x0d, 0x00, 0xEF] + [0x41] * 0xEF)
+    return cases
+
+
+class FuzzHarness:
+    """Sends a corpus of crafted/malformed app messages and flags anomalous
+    responses — the RF-input side of instrumented frame fuzzing. A response
+    longer than what we sent is an over-read (memory disclosure); an unexpected
+    opcode or a mid-run session drop (sensor reset/crash) is also a signal."""
+
+    sustain_on_any = True
+
+    def __init__(self, cases=None):
+        self._queue = list(cases) if cases is not None else build_fuzz_corpus()
+        self._pending: dict[int, tuple] = {}   # tag -> (name, sent body)
+        self._probed: list[str] = []
+        self.responses: list[dict] = []
+        self.findings: list[dict] = []
+
+    def next_probe(self, tag: int) -> bytes | None:
+        if not self._queue:
+            return None
+        name, body = self._queue.pop(0)
+        b = bytearray(body)
+        if len(b) >= 2:
+            b[1] = tag & 0xFF
+        self._pending[tag & 0xFF] = (name, bytes(b))
+        self._probed.append(name)
+        return bytes(b)
+
+    def ingest(self, payload: bytes) -> None:
+        if not payload or len(payload) < 2:
+            return
+        resp_id, resp_tag = payload[0], payload[1]
+        pend = self._pending.pop(resp_tag, None)
+        if pend is None:
+            return
+        name, sent = pend
+        body = payload[2:]
+        sent_payload_len = max(0, len(sent) - 2)
+        rec = {"case": name, "resp_id": resp_id, "resp_len": len(body),
+               "sent_len": sent_payload_len, "hex": body.hex()}
+        self.responses.append(rec)
+        # Over-read: response body carries more than we handed the sensor.
+        # Unexpected opcode (not status/ping/report) is also worth a look.
+        if len(body) > sent_payload_len or resp_id not in (0x01, 0x05, 0x0c):
+            self.findings.append(rec)
+
+    def done(self) -> bool:
+        return not self._queue
+
+    def summary(self) -> dict:
+        return {"probed": len(self._probed), "remaining": len(self._queue),
+                "responses": len(self.responses), "findings": len(self.findings)}
+
+
 class PropertySweep:
     def __init__(self, ids=None, batch_size: int = 8):
         # Default: probe the entire byte range (defined ids give a baseline,

@@ -819,6 +819,13 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Enable PING over-read probe: PING_REQUEST with varying data "
              "lengths, flag any PING_RESPONSE longer than sent (Heartbleed).",
     )
+    parser.add_argument(
+        "--fuzz", action="store_true",
+        help="Enable the crafted-frame FUZZ harness: sends malformed app "
+             "messages (length-field over-reads, oversized values, undefined "
+             "opcodes) and flags anomalous responses. AGGRESSIVE — can crash "
+             "the sensor. Pairs with SWD observation of the parser.",
+    )
     return parser.parse_args(argv)
 
 
@@ -867,6 +874,11 @@ def main():
         from .sweep import PingProbe
         sweep = PingProbe()
         log.info("PING over-read probe enabled: lengths %s", sweep._queue)
+    elif args.fuzz:
+        from .sweep import FuzzHarness
+        sweep = FuzzHarness()
+        log.info("FUZZ harness enabled: %d crafted cases (AGGRESSIVE)",
+                 len(sweep._queue))
     elif args.sweep:
         from .sweep import PropertySweep, parse_id_spec
         try:
