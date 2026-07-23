@@ -78,6 +78,13 @@ def encode_device_info_request(tag: int = 0) -> bytes:
     return bytes([MessageId.DEVICE_INFO_REQUEST, tag & 0xFF])
 
 
+def encode_ping_request(tag: int = 0, data: bytes = b"") -> bytes:
+    """PING_REQUEST body: [4, tag, data...]. Liveness keep-alive; the device
+    echoes it back as PING_RESPONSE (5). Used to hold the command session open
+    between property probes."""
+    return bytes([MessageId.PING_REQUEST, tag & 0xFF]) + bytes(data)
+
+
 def encode_property_request(property_ids, tag: int = 0) -> bytes:
     """PROPERTY_REQUEST body: [11, tag, id...].
 

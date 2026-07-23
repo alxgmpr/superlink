@@ -87,12 +87,15 @@ def test_0x53_command_window_triggers_probe_tx():
     s = _active_session_with_sweep(PropertySweep(ids=[43]))
     s._adopted = True  # command window only opens post-commit
     s._ul_counter_offset = 0
-    # 0x54 telemetry must NOT elicit a probe now.
+    # 0x54 telemetry (PROPERTY_REPORT) must NOT elicit a property/device probe;
+    # it may only elicit a PING keep-alive (mid 4).
     raw54 = build_frame(0xE0, 0x54, SENSOR_MAC, 0x02, 0x00,
                         b"\x00\x00\x00\x00", b"\x0c\x00",
                         s.session_key, counter=2)
     _, tx54, _ = s.handle_rx(raw54, ul_channel=1)
-    assert tx54 is None
+    if tx54 is not None:
+        f54 = decrypt_frame(parse_frame(tx54), s.session_key, dl_counter=0)
+        assert f54.payload[0] == appmsg.MessageId.PING_REQUEST
     # 0x53 command window DOES elicit the DEVICE_INFO_REQUEST probe.
     raw53 = build_frame(0xE0, 0x53, SENSOR_MAC, 0x01, 0x30,
                         b"\x00\x00\x00\x00", b"\x01\x00",

@@ -392,12 +392,45 @@ class GatewaySession:
                      dl_freq / 1e6)
             return frame, tx_frame, dl_freq
 
-        # Sweep mode: ingest any report the sensor sends (telemetry or the
-        # response to a command-window probe). Commands themselves are delivered
-        # in the 0x53 command window above — NOT on 0x54 telemetry, which the
-        # sensor sends fire-and-forget and does not act on replies to.
-        if self.sweep is not None:
+        # Sweep mode: ingest reports and DRIVE the exchange. The initial probe
+        # goes out in the 0x53 command window (above). To drain all ids we must
+        # sustain the ping-pong the way the bridge does — the sensor stays in
+        # command mode only while we keep sending it commands in the RX window
+        # that follows each of its response frames.
+        if self.sweep is not None and self._adopted and frame.payload:
             self._ingest_app_report(frame.payload)
+            mid = frame.payload[0]
+            if 1 <= ul_channel <= 8:
+                from .hal import DL_FREQ_HZ
+                dl_freq = DL_FREQ_HZ[ul_channel - 1]
+                # (1) Sustained exchange: a solicited report arrives on 0x44
+                # (DEVICE_INFO_REPORT 0x0a / PROPERTY_REPORT 0x0c). The sensor
+                # has an RX window open right after — send the next probe.
+                if frame.dctrl == 0x44 and mid in (0x0a, 0x0c):
+                    body = self._next_probe_body()
+                    if body is None and not self.sweep.done():
+                        from . import appmsg
+                        self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+                        body = appmsg.encode_ping_request(tag=self._sweep_tag)
+                    if body is not None:
+                        tx = self._build_command(
+                            frame.mac, body, frame.seq_hi + 1)
+                        log.info("SWEEP cmd (sustain <-0x44 seq=%02X) body=%s "
+                                 "on %.1f MHz", frame.seq_hi, body.hex(),
+                                 dl_freq / 1e6)
+                        return frame, tx, dl_freq
+                # (2) PING keep-alive: on plain 0x54 telemetry, nudge the sensor
+                # with a PING_REQUEST to try to hold the command session open
+                # (it echoes PING_RESPONSE). Only while there is still work.
+                if (frame.dctrl == 0x54 and mid == 0x0c
+                        and not self.sweep.done()):
+                    from . import appmsg
+                    self._sweep_tag = (self._sweep_tag + 1) & 0xFF
+                    body = appmsg.encode_ping_request(tag=self._sweep_tag)
+                    tx = self._build_command(frame.mac, body, frame.seq_hi + 1)
+                    log.info("SWEEP ping keep-alive (<-0x54 seq=%02X) on "
+                             "%.1f MHz", frame.seq_hi, dl_freq / 1e6)
+                    return frame, tx, dl_freq
             if self.sweep.done():
                 log.info("SWEEP complete: %s", self.sweep.summary())
 
@@ -443,6 +476,17 @@ class GatewaySession:
     def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
         """0x74 DL reply (sweep probes / mgmt replies)."""
         return self._build_dl_reply(mac, body, dctrl=0x74)
+
+    def _build_command(self, mac: bytes, body: bytes, seq_hi: int,
+                       seq_lo: int = 0x81, ctr: int = 0) -> bytes:
+        """Build a DL 0x74 command frame in the sensor's command-window format
+        (seq_lo 0x81, ctr 0) — the shape the sensor accepts for ADOPT_REQUEST
+        and DEVICE_INFO_REQUEST. Used to drive the sustained sweep exchange."""
+        seq_hi &= 0xFF
+        header = bytes([0xE0, 0x74]) + mac + bytes([seq_hi, seq_lo])
+        mic = compute_mic(header, body)
+        return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
+                           self.session_key, counter=ctr)
 
     def _scan_data_counter(self, frame) -> int | None:
         """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
