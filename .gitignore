@@ -67,4 +67,5 @@ captures/live/mock_controller.jsonl
 
 # Sensor SRAM dumps contain live device keys — never publish
 captures/sensor_ram*.bin
-tools/sensor_swd/
+tools/sensor_swd/*.bin
+tools/sensor_swd/*.log

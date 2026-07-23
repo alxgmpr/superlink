@@ -56,7 +56,20 @@ target. This is the best RF-memory primitive found. Investigate via the
 SWD-instrumented differential dump (below). NOTE: this is a WRITE path —
 aggressive testing risks bricking the single sensor; go carefully.
 
-## SWD status & the CORRECT method (my mistake — don't repeat)
+## SWD status — SOLVED 2026-07-23 (attach-no-reset proven)
+Live keystore extraction over SWD is **done**. `tools/sensor_swd/live_dump.sh`
+(with `attach_dump.jlink`) attaches to the running sensor with no reset and reads
+the current committed keys. Ground truth: live `primary=fa806bc3…`/`fallback=e65a1a23…`
+from the Pi's `superlink_adopt.json` both found at `0x20001298`/`0x200012b8`.
+Recipe + why in `docs/protocol/sensor_sram_keystore.md` ("Live extraction method").
+Key facts: (a) `--keep-awake` keeps the SWD-AP powered; (b) generic `Cortex-M4`
+device + never `r`; (c) STM32 STOPs between PING slots so you must HAMMER the
+attach (~170 shots) to catch a window — a power-cycle's boot window is easiest;
+(d) NRST is unwired so a missed attach can't reset the sensor (adoption survives).
+The remaining SWD gap: OTA decrypt key is NOT in SRAM (RDP1 flash), so SWD gives
+session/adopt keys only.
+
+## (historical) SWD blocker & the CORRECT method (my mistake — don't repeat)
 J-Link (`/usr/local/bin/JLinkExe`, on the Mac) attaches to the sensor and dumps
 SRAM. Prior dumps `captures/sensor_ram*.bin` (gitignored) contain the keystore.
 The blocker this session: I kept letting J-Link fall back to **connect-under-
