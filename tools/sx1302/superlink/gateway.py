@@ -885,6 +885,38 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "attach lands on the running app (live keys resident). Pair with "
              "--reconnect.",
     )
+    parser.add_argument(
+        "--write-fuzz", action="store_true",
+        help="WRITE-path fuzz corpus (Vector 1 OOB channel-index + Vector 3 "
+             "multi-entry PROPERTY_SET desync). AGGRESSIVE writes — pair with "
+             "the SWD crash oracle (tools/sensor_swd/crash_oracle.sh).",
+    )
+    parser.add_argument(
+        "--ota-push", metavar="FILE",
+        help="Push a firmware .ota to the sensor (controller-side relay). Sends "
+             "FIRMWARE_UPDATE_START then serves the sensor's chunk requests from "
+             "FILE. Use for firmware-capture-during-decrypt (SWD-dump mid-run).",
+    )
+    parser.add_argument(
+        "--ota-evil-offset", type=lambda x: int(x, 0), metavar="OFF",
+        help="Vector 2 OOB-write probe: enter OTA mode (UPDATE_START) then inject "
+             "a FIRMWARE_CHUNK_RESPONSE at this attacker-chosen offset with a "
+             "DEADBEEF marker. SWD-diff SRAM to find where it landed.",
+    )
+    parser.add_argument(
+        "--ota-size", type=lambda x: int(x, 0), default=96270, metavar="N",
+        help="Total firmware size to advertise in UPDATE_START for "
+             "--ota-evil-offset (default 96270 = usl-motion .ota).",
+    )
+    parser.add_argument(
+        "--ota-marker-len", type=int, default=64, metavar="N",
+        help="Marker chunk length for --ota-evil-offset (default 64).",
+    )
+    parser.add_argument(
+        "--ota-pause-at", type=lambda x: int(x, 0), default=None, metavar="OFF",
+        help="With --ota-push, stall the transfer once the sensor requests an "
+             "offset >= OFF, holding a known transfer state for an SWD dump.",
+    )
     return parser.parse_args(argv)
 
 
@@ -918,7 +950,33 @@ def main():
             sys.exit(1)
 
     sweep = None
-    if args.keep_awake:
+    if args.ota_push:
+        from .sweep import OtaPush
+        try:
+            ota_bytes = open(args.ota_push, "rb").read()
+        except OSError as e:
+            print(f"Error: cannot read --ota-push file: {e}", file=sys.stderr)
+            sys.exit(1)
+        sweep = OtaPush(ota_bytes=ota_bytes, pause_at=args.ota_pause_at)
+        log.info("OTA-PUSH relay: %s (%d bytes)%s — will drive the sensor's "
+                 "firmware update; hammer SWD dumps during transfer",
+                 args.ota_push, len(ota_bytes),
+                 f", pause_at=0x{args.ota_pause_at:x}"
+                 if args.ota_pause_at is not None else "")
+    elif args.ota_evil_offset is not None:
+        from .sweep import OtaPush
+        sweep = OtaPush(total_size=args.ota_size,
+                        evil_offset=args.ota_evil_offset,
+                        evil_len=args.ota_marker_len)
+        log.info("OTA-EVIL Vector-2: enter OTA mode (size=%d) then inject marker "
+                 "chunk at offset 0x%x (len %d). SWD-diff to locate the write.",
+                 args.ota_size, args.ota_evil_offset, args.ota_marker_len)
+    elif args.write_fuzz:
+        from .sweep import FuzzHarness, build_write_corpus
+        sweep = FuzzHarness(build_write_corpus())
+        log.info("WRITE-FUZZ enabled: %d write vectors (chan-index + desync) — "
+                 "AGGRESSIVE, pair with SWD crash oracle", len(sweep._queue))
+    elif args.keep_awake:
         from .sweep import KeepAwake
         sweep = KeepAwake()
         log.info("KEEP-AWAKE mode: continuous PING loop to hold the sensor "

