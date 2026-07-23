@@ -180,6 +180,35 @@ class PingProbe:
                 "results": len(self.results), "findings": len(self.findings)}
 
 
+class KeepAwake:
+    """Holds the sensor awake indefinitely by keeping it in its command window
+    — sends a PING every exchange, forever, so the CPU never deep-sleeps. This
+    lets a plain SWD attach land on the running app (live keys resident) instead
+    of falling back to connect-under-reset, and lets the OTA-chunk differential
+    dump run while the sensor is awake."""
+
+    sustain_on_any = True
+
+    def __init__(self):
+        self.pings = 0
+        self.responses = 0
+        self.findings: list = []
+
+    def next_probe(self, tag: int) -> bytes | None:
+        self.pings += 1
+        return appmsg.encode_ping_request(tag=tag)
+
+    def ingest(self, payload: bytes) -> None:
+        if payload and len(payload) >= 2 and payload[0] == 0x05:
+            self.responses += 1
+
+    def done(self) -> bool:
+        return False   # never — stay awake until the gateway stops
+
+    def summary(self) -> dict:
+        return {"pings": self.pings, "responses": self.responses}
+
+
 def build_fuzz_corpus() -> list:
     """Crafted app-message bodies targeting the sensor's message parser, below
     the well-behaved app API. Each is `[msgId][tag=0][payload]`; the harness

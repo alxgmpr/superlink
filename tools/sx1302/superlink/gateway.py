@@ -879,6 +879,12 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "a prior commit (/tmp/superlink_adopt.json) — no factory-reset "
              "needed after a gateway restart.",
     )
+    parser.add_argument(
+        "--keep-awake", action="store_true",
+        help="Hold the sensor awake with a continuous PING loop so a plain SWD "
+             "attach lands on the running app (live keys resident). Pair with "
+             "--reconnect.",
+    )
     return parser.parse_args(argv)
 
 
@@ -912,7 +918,12 @@ def main():
             sys.exit(1)
 
     sweep = None
-    if args.msg_sweep:
+    if args.keep_awake:
+        from .sweep import KeepAwake
+        sweep = KeepAwake()
+        log.info("KEEP-AWAKE mode: continuous PING loop to hold the sensor "
+                 "awake for SWD attach")
+    elif args.msg_sweep:
         from .sweep import MessageSweep, parse_msg_id_spec
         try:
             ids = parse_msg_id_spec(args.msg_sweep)
