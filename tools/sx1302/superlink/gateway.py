@@ -290,64 +290,39 @@ class GatewaySession:
         # docs/protocol/superlink_application_layer.md — fresh ephemeral X25519
         # keypairs per pair attempt, not the captured-pair4-bytes-with-masks
         # blind-search the prior code was doing.
-        if frame.dctrl in (0x53, 0x44, 0x43) and 1 <= ul_channel <= 8:
+        # Adoption — match the real bridge's MINIMAL flow (ground truth
+        # bridge_adopt_fresh_pass2_20260722.log): the bridge answers the
+        # sensor's first 0x53 mgmt poll with the ADOPT_REQUEST *directly*.
+        # There is NO pre-commit DEVICE_INFO_REQUEST (0x09) or PROPERTY_REQUEST
+        # (0x0b) — those exchanges happen only AFTER the sensor commits. The
+        # sensor then sends ADOPT_RESPONSE (0x54, handled above) and we ack
+        # with 0x63 01 00. We deliberately do NOT reply to pre-commit 0x44/0x43
+        # (the bridge doesn't either).
+        if frame.dctrl == 0x53 and 1 <= ul_channel <= 8 and not self._adopted:
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
-
-            self._post_pair_tx_seq_hi = getattr(
-                self, "_post_pair_tx_seq_hi", 0) + 1
-            self._post_pair_tx_seq_lo = getattr(
-                self, "_post_pair_tx_seq_lo", 0) + 1
-            self._post_pair_counter = getattr(
-                self, "_post_pair_counter", -1) + 1
-            seq_hi = self._post_pair_tx_seq_hi & 0xFF
-            seq_lo = self._post_pair_tx_seq_lo & 0xFF
-            counter = self._post_pair_counter
-
-            # Per-session DL-management counter (position 1 of each reply
-            # body). Initialize on first use. The starting value is
-            # configurable via --mgmt-counter-start (default 0x7c matches
-            # pair4 capture); subsequent replies increment by 1.
+            if not _HAS_CRYPTO:
+                raise RuntimeError(
+                    "pysodium required for ADOPT_REQUEST keypair generation")
             if not hasattr(self, "_mgmt_counter"):
                 self._mgmt_counter = getattr(self, "mgmt_counter_start", 0x7c)
             mgmt = self._mgmt_counter & 0xFF
             self._mgmt_counter += 1
-
-            if frame.dctrl == 0x53:
-                body = bytes([0x09, mgmt])
-            elif frame.dctrl == 0x44:
-                body = bytes([0x0b, mgmt, 0x11, 0x01, 0x0d, 0x14])
-            else:  # 0x43 — emit a fresh ADOPT_REQUEST per Y5
-                if not _HAS_CRYPTO:
-                    raise RuntimeError(
-                        "pysodium required for ADOPT_REQUEST keypair generation")
-                # Fresh ephemeral keypair per pair attempt — never reuse.
-                # Stashed on `self` so the matching ADOPT_RESPONSE handler
-                # can derive the rotated persistent keys via kdf_E.
-                self._eph_priv_r = secrets.token_bytes(32)
-                self._eph_priv_o = secrets.token_bytes(32)
-                gw_pub = pysodium.crypto_scalarmult_curve25519_base(
-                    self._eph_priv_r)
-                gw_fb_pub = pysodium.crypto_scalarmult_curve25519_base(
-                    self._eph_priv_o)
-                body = encode_adopt_request(
-                    mgmt, gw_pub, gw_fb_pub, self.network_id)
-                log.info(
-                    "ADOPT_REQUEST tag=0x%02x gw_pub=%s gw_fb_pub=%s "
-                    "networkId=0x%x",
-                    mgmt, gw_pub.hex(), gw_fb_pub.hex(), self.network_id)
-
-            header = bytes([0xE0, 0x74]) + frame.mac + bytes([seq_hi, seq_lo])
-            mic = compute_mic(header, body)
-            tx_frame = build_frame(
-                0xE0, 0x74, frame.mac, seq_hi, seq_lo,
-                mic, body,
-                self.session_key, counter=counter,
-            )
-            log.info("TX 0x74 reply to 0x%02X on %.1f MHz "
-                     "(seq=%02X.%02X counter=%d body=%s)",
-                     frame.dctrl, dl_freq / 1e6, seq_hi, seq_lo,
-                     counter, body.hex())
+            # Fresh ephemeral keypair, stashed so the ADOPT_RESPONSE handler
+            # derives the rotated addDevice.key via kdf_E.
+            self._eph_priv_r = secrets.token_bytes(32)
+            self._eph_priv_o = secrets.token_bytes(32)
+            gw_pub = pysodium.crypto_scalarmult_curve25519_base(
+                self._eph_priv_r)
+            gw_fb_pub = pysodium.crypto_scalarmult_curve25519_base(
+                self._eph_priv_o)
+            body = encode_adopt_request(
+                mgmt, gw_pub, gw_fb_pub, self.network_id)
+            tx_frame = self._build_dl_reply(frame.mac, body, dctrl=0x74)
+            log.info("ADOPT_REQUEST (reply to 0x53) tag=0x%02x gw_pub=%s "
+                     "gw_fb_pub=%s networkId=0x%x on %.1f MHz",
+                     mgmt, gw_pub.hex(), gw_fb_pub.hex(), self.network_id,
+                     dl_freq / 1e6)
             return frame, tx_frame, dl_freq
 
         # Sweep mode (post-adoption): capture any report, and use the sensor's

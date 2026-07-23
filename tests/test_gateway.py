@@ -307,11 +307,12 @@ def _active_session_for_adopt():
     return session
 
 
-def test_active_0x43_emits_fresh_adopt_request():
-    """A sensor 0x43 UL in ACTIVE state should produce a 0x74 DL whose
-    plaintext body is a fresh ADOPT_REQUEST (messageId=0x02, two ephemeral
-    pubkeys, networkId BE). Privates must be stored on the session for the
-    later ADOPT_RESPONSE round-trip."""
+def test_active_0x53_emits_fresh_adopt_request():
+    """The real bridge answers the sensor's first 0x53 mgmt poll with the
+    ADOPT_REQUEST directly (no pre-commit 0x09/0x0b). So a 0x53 UL in ACTIVE
+    state (pre-adoption) should produce a 0x74 DL whose plaintext body is a
+    fresh ADOPT_REQUEST (messageId=0x02, two ephemeral pubkeys, networkId BE).
+    Privates must be stored for the later ADOPT_RESPONSE round-trip."""
     import nacl.bindings as nacl_bindings
 
     from superlink.adopt import MSG_ADOPT_REQUEST
@@ -319,10 +320,10 @@ def test_active_0x43_emits_fresh_adopt_request():
 
     session = _active_session_for_adopt()
 
-    # Build a synthetic 0x43 UL from the sensor — encrypted body, counter=0.
-    ul_payload = b"\x43\x00\x00\x00"  # body content is irrelevant for the test
+    # Build a synthetic 0x53 UL from the sensor — encrypted body, counter=0.
+    ul_payload = b"\x01\x00"  # sensor mgmt poll body (REQUEST_STATUS_RESPONSE)
     ul_mic = b"\x11\x22\x33\x44"
-    ul_raw = build_frame(0xE0, 0x43, SENSOR_MAC, 0x10, 0x20,
+    ul_raw = build_frame(0xE0, 0x53, SENSOR_MAC, 0x10, 0x20,
                          ul_mic, ul_payload, session.session_key, counter=0)
 
     _, tx_raw, dl_freq = session.handle_rx(ul_raw, ul_channel=1)
