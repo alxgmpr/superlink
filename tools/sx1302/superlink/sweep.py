@@ -44,6 +44,142 @@ def parse_id_spec(spec: str) -> list[int]:
     return ids
 
 
+# Firmware-defined message ids (module 41118 MessageId enum). Undefined ids —
+# 0x00, 0x0d, and 0x12..0xff — are the dispatch-table fuzz targets.
+DEFINED_MESSAGE_IDS = frozenset(
+    {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 15, 16, 17})
+# Never send these unsolicited: they reboot / factory-reset / re-adopt the
+# sensor and would tear down the session.
+DANGEROUS_MESSAGE_IDS = frozenset({2, 6, 7})
+
+
+def parse_msg_id_spec(spec: str) -> list[int]:
+    """Parse a message-id selection. "undefined" = 0x00,0x0d,0x12..0xff;
+    "all" = 0..255 minus dangerous (reboot/reset/adopt); or a comma list of
+    singles and inclusive ranges."""
+    spec = spec.strip().lower()
+    if spec == "undefined":
+        return sorted(set(range(256)) - DEFINED_MESSAGE_IDS
+                      - DANGEROUS_MESSAGE_IDS)
+    if spec == "all":
+        return [i for i in range(256) if i not in DANGEROUS_MESSAGE_IDS]
+    ids: list[int] = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = (int(x) for x in part.split("-", 1))
+            rng = range(lo, hi + 1)
+        else:
+            rng = [int(part)]
+        for i in rng:
+            if not 0 <= i <= 255:
+                raise ValueError(f"msg id {i} out of range 0-255")
+            ids.append(i)
+    return ids
+
+
+class MessageSweep:
+    """Fuzz the sensor's message dispatch: send each message id as
+    `[msgId][tag][body]` and record the response (matched by tag). An undefined
+    opcode that returns anything other than a plain status/no-reply is the
+    signal — a candidate handler-table over-index."""
+
+    sustain_on_any = True  # any 0x44 response keeps the ping-pong going
+
+    def __init__(self, ids=None, body: bytes = b""):
+        self._queue = (list(ids) if ids is not None else
+                       sorted(set(range(256)) - DEFINED_MESSAGE_IDS
+                              - DANGEROUS_MESSAGE_IDS))
+        self.body = bytes(body)
+        self._pending: dict[int, int] = {}   # tag -> msg id sent
+        self._probed: list[int] = []
+        self.responses: dict[int, dict] = {}  # msg id -> {resp_msg_id, payload}
+        self.findings: list[dict] = []
+
+    def next_probe(self, tag: int) -> bytes | None:
+        if not self._queue:
+            return None
+        mid = self._queue.pop(0)
+        self._probed.append(mid)
+        self._pending[tag & 0xFF] = mid
+        return bytes([mid, tag & 0xFF]) + self.body
+
+    def ingest(self, payload: bytes) -> None:
+        if not payload or len(payload) < 2:
+            return
+        resp_id, resp_tag = payload[0], payload[1]
+        mid = self._pending.pop(resp_tag, None)
+        if mid is None:
+            return  # not a reply to one of our probes (telemetry / PING)
+        body = payload[2:]
+        self.responses[mid] = {"resp_msg_id": resp_id, "payload": bytes(body)}
+        # A plain REQUEST_STATUS_RESPONSE (0x01) with no body-of-interest is the
+        # boring "unsupported" answer. Anything else — a different opcode echoed
+        # back, or a non-empty body — is worth flagging.
+        interesting = resp_id != 0x01 or len(body) > 1
+        if interesting:
+            self.findings.append({
+                "msg_id": mid, "resp_msg_id": resp_id,
+                "payload": bytes(body)})
+
+    def done(self) -> bool:
+        return not self._queue
+
+    def summary(self) -> dict:
+        return {"probed": len(self._probed), "remaining": len(self._queue),
+                "responded": len(self.responses), "findings": len(self.findings)}
+
+
+class PingProbe:
+    """PING_REQUEST with varying data lengths; compares PING_RESPONSE data
+    length to what was sent. A response longer than the request is a
+    Heartbleed-style over-read leaking sensor memory."""
+
+    sustain_on_any = True
+
+    def __init__(self, lengths=None):
+        self._queue = list(lengths) if lengths else [0, 1, 4, 16, 64, 200]
+        self._pending: dict[int, int] = {}   # tag -> sent length
+        self._probed: list[int] = []
+        self.results: list[dict] = []
+        self.findings: list[dict] = []
+
+    def next_probe(self, tag: int) -> bytes | None:
+        if not self._queue:
+            return None
+        n = self._queue.pop(0)
+        self._probed.append(n)
+        self._pending[tag & 0xFF] = n
+        # Distinctive, position-dependent marker so an over-read is obvious.
+        marker = bytes([0xA0 + (i & 0x0F) for i in range(n)])
+        return appmsg.encode_ping_request(tag=tag, data=marker)
+
+    def ingest(self, payload: bytes) -> None:
+        if not payload or len(payload) < 2:
+            return
+        if payload[0] != appmsg.MessageId.PING_RESPONSE:
+            return
+        sent = self._pending.pop(payload[1], None)
+        if sent is None:
+            return
+        data = bytes(payload[2:])
+        leak = len(data) > sent
+        rec = {"sent": sent, "resp_len": len(data), "leak": leak,
+               "hex": data.hex()}
+        self.results.append(rec)
+        if leak:
+            self.findings.append(rec)
+
+    def done(self) -> bool:
+        return not self._queue
+
+    def summary(self) -> dict:
+        return {"probed": len(self._probed), "remaining": len(self._queue),
+                "results": len(self.results), "findings": len(self.findings)}
+
+
 class PropertySweep:
     def __init__(self, ids=None, batch_size: int = 8):
         # Default: probe the entire byte range (defined ids give a baseline,

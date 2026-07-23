@@ -406,7 +406,9 @@ class GatewaySession:
                 # (1) Sustained exchange: a solicited report arrives on 0x44
                 # (DEVICE_INFO_REPORT 0x0a / PROPERTY_REPORT 0x0c). The sensor
                 # has an RX window open right after — send the next probe.
-                if frame.dctrl == 0x44 and mid in (0x0a, 0x0c):
+                if frame.dctrl == 0x44 and (
+                        mid in (0x0a, 0x0c)
+                        or getattr(self.sweep, "sustain_on_any", False)):
                     body = self._next_probe_body()
                     if body is None and not self.sweep.done():
                         from . import appmsg
@@ -447,7 +449,11 @@ class GatewaySession:
             return None
         from . import appmsg
         self._sweep_tag = (self._sweep_tag + 1) & 0xFF
-        # Send DEVICE_INFO_REQUEST until we've got a report back.
+        # MessageSweep / PingProbe drive themselves via next_probe(tag).
+        if hasattr(self.sweep, "next_probe"):
+            return self.sweep.next_probe(self._sweep_tag)
+        # PropertySweep: DEVICE_INFO_REQUEST first (maps the surface + value-size
+        # map), then PROPERTY_REQUEST batches until the id queue drains.
         if self.sweep.device_info is None:
             return appmsg.encode_device_info_request(tag=self._sweep_tag)
         batch = self.sweep.next_batch()
@@ -513,6 +519,16 @@ class GatewaySession:
         if self.sweep is None or not payload or len(payload) < 2:
             return
         from . import appmsg
+        # MessageSweep / PingProbe ingest the raw app message (matched by tag)
+        # and log any interesting response themselves.
+        if hasattr(self.sweep, "next_probe"):
+            n_before = len(self.sweep.findings)
+            self.sweep.ingest(payload)
+            log.info("SWEEP resp msgId=0x%02x tag=0x%02x body=%s",
+                     payload[0], payload[1], payload[2:].hex())
+            for f in self.sweep.findings[n_before:]:
+                log.warning("SWEEP FINDING %s", f)
+            return
         msg_id = payload[0]
         if msg_id == appmsg.MessageId.DEVICE_INFO_REPORT:
             try:
@@ -791,6 +807,18 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--sweep-batch", type=int, default=8, metavar="N",
         help="Property ids per PROPERTY_REQUEST probe (default 8).",
     )
+    parser.add_argument(
+        "--msg-sweep", nargs="?", const="undefined", metavar="IDS",
+        help="Enable MESSAGE-ID sweep: send each message id as [id][tag] and "
+             "record the response. IDS: 'undefined' (default — 0x00,0x0d,"
+             "0x12-0xff, skipping reboot/reset/adopt), 'all', or an explicit "
+             "list. Mutually exclusive with --sweep.",
+    )
+    parser.add_argument(
+        "--ping-probe", action="store_true",
+        help="Enable PING over-read probe: PING_REQUEST with varying data "
+             "lengths, flag any PING_RESPONSE longer than sent (Heartbleed).",
+    )
     return parser.parse_args(argv)
 
 
@@ -824,7 +852,22 @@ def main():
             sys.exit(1)
 
     sweep = None
-    if args.sweep:
+    if args.msg_sweep:
+        from .sweep import MessageSweep, parse_msg_id_spec
+        try:
+            ids = parse_msg_id_spec(args.msg_sweep)
+        except ValueError as e:
+            print(f"Error: invalid --msg-sweep IDS: {e}", file=sys.stderr)
+            sys.exit(1)
+        sweep = MessageSweep(ids=ids)
+        log.info("MESSAGE-ID sweep enabled: %d ids (%s)", len(ids),
+                 ",".join(f"0x{i:02x}" for i in ids[:12])
+                 + (",…" if len(ids) > 12 else ""))
+    elif args.ping_probe:
+        from .sweep import PingProbe
+        sweep = PingProbe()
+        log.info("PING over-read probe enabled: lengths %s", sweep._queue)
+    elif args.sweep:
         from .sweep import PropertySweep, parse_id_spec
         try:
             ids = parse_id_spec(args.sweep)
