@@ -248,13 +248,17 @@ class GatewaySession:
             # _build_0x74_reply's _post_pair_* progression.
             from .hal import DL_FREQ_HZ
             dl_freq = DL_FREQ_HZ[ul_channel - 1]
-            if not hasattr(self, "_mgmt_counter"):
-                self._mgmt_counter = getattr(self, "mgmt_counter_start", 0x7c)
-            mgmt = self._mgmt_counter & 0xFF
-            self._mgmt_counter += 1
-            confirm_body = bytes([0x0e, mgmt, 0x0d, 0x00, 0x01, 0x2c])
-            tx_frame = self._build_0x74_reply(frame.mac, confirm_body)
-            log.info("adoption-confirm TX 0x74 on %.1f MHz (body=%s)",
+            # Commit ack: the real bridge answers ADOPT_RESPONSE with a single
+            # 0x63 REQUEST_STATUS_RESPONSE(status=OK) body `01 00` — verified
+            # ground truth from a fresh adoption capture
+            # (bridge_adopt_fresh_pass2_20260722.log). The `0e NN 0d 00 01 2c`
+            # we sent before is actually a PROPERTY_SET(REPORT_INTERVAL=300)
+            # config write the controller sends LATER; sending it here (a
+            # malformed reply before device info) is why the sensor never
+            # committed.
+            confirm_body = bytes([0x01, 0x00])
+            tx_frame = self._build_dl_reply(frame.mac, confirm_body, dctrl=0x63)
+            log.info("adoption commit-ack TX 0x63 on %.1f MHz (body=%s)",
                      dl_freq / 1e6, confirm_body.hex())
 
             # Rotate to operational mode. Post-adoption the sensor reconnects
@@ -384,11 +388,12 @@ class GatewaySession:
             return None
         return appmsg.encode_property_request(batch, tag=self._sweep_tag)
 
-    def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
-        """Build an encrypted 0x74 DL frame carrying an app-message body.
+    def _build_dl_reply(self, mac: bytes, body: bytes, dctrl: int = 0x74) -> bytes:
+        """Build an encrypted DL frame carrying an app-message body.
 
-        Reuses the post-pairing seq/counter progression so probes continue the
-        same DL-data counter sequence the mgmt replies established.
+        Continues the post-pairing seq/counter progression (shared DL-data
+        counter) so consecutive DL frames — 0x74 mgmt replies/probes and the
+        0x63 commit ack — stay in sequence for the sensor's nonce.
         """
         self._post_pair_tx_seq_hi = getattr(self, "_post_pair_tx_seq_hi", 0) + 1
         self._post_pair_tx_seq_lo = getattr(self, "_post_pair_tx_seq_lo", 0) + 1
@@ -396,10 +401,14 @@ class GatewaySession:
         seq_hi = self._post_pair_tx_seq_hi & 0xFF
         seq_lo = self._post_pair_tx_seq_lo & 0xFF
         counter = self._post_pair_counter
-        header = bytes([0xE0, 0x74]) + mac + bytes([seq_hi, seq_lo])
+        header = bytes([0xE0, dctrl]) + mac + bytes([seq_hi, seq_lo])
         mic = compute_mic(header, body)
-        return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
+        return build_frame(0xE0, dctrl, mac, seq_hi, seq_lo, mic, body,
                            self.session_key, counter=counter)
+
+    def _build_0x74_reply(self, mac: bytes, body: bytes) -> bytes:
+        """0x74 DL reply (sweep probes / mgmt replies)."""
+        return self._build_dl_reply(mac, body, dctrl=0x74)
 
     def _ingest_app_report(self, payload: bytes) -> None:
         """Route a decrypted UL app message into the sweep controller."""

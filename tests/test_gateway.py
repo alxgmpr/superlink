@@ -383,14 +383,15 @@ def test_active_0x03_decodes_and_derives_addDevice_keys():
                       mic, body, session.session_key, counter=1)
 
     _, tx_raw, tx_freq = session.handle_rx(raw, ul_channel=1)
-    # ADOPT_RESPONSE is answered with a SINGLE 6-byte adoption-confirm
-    # `0e NN 0d 00 01 2c` (byte-exact ground truth from real-bridge
-    # pair5/pair6), NOT the old 3-frame 09/0b/09 burst.
+    # ADOPT_RESPONSE is answered with the real-bridge commit ack: a single
+    # 0x63 REQUEST_STATUS_RESPONSE(status=OK) body `01 00` (ground truth,
+    # bridge_adopt_fresh_pass2_20260722.log) — NOT a 0x74 PROPERTY_SET.
     from superlink.decoder import parse_frame, decrypt_frame
     assert tx_raw is not None and tx_freq > 0
     confirm = decrypt_frame(parse_frame(tx_raw), session.session_key,
                             dl_counter=0)
-    assert confirm.payload == bytes([0x0e, 0x9c, 0x0d, 0x00, 0x01, 0x2c])
+    assert confirm.dctrl == 0x63
+    assert confirm.payload == bytes([0x01, 0x00])
 
     # Keys derived correctly.
     expected_key = kdf_E(bytes.fromhex(
