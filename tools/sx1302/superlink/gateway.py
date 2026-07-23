@@ -76,9 +76,22 @@ class GatewaySession:
         self.state = State.IDLE
         self.sensor_mac: bytes | None = None
         self.session_key: bytes | None = None
-        # Set once the ADOPT round-trip completes; thereafter the KDF context
-        # is the rotated addDevice.key and handshakes are operational reconnects.
+        # Set once we OBSERVE the sensor commit (adopted-form 0x40 discovery
+        # `01ae94 8N 0000048f`); thereafter the KDF context is the primary
+        # addDevice.key and the handshake transport key is the fallbackKey.
         self._adopted = False
+        # True after the ADOPT round-trip has produced (primary, fallback) keys
+        # but BEFORE the sensor has committed. We do NOT rotate keys yet — a
+        # non-committing sensor keeps handshaking under the pairing key/default
+        # context, so premature rotation would lock us out (the one-way-trap).
+        self._adopt_pending = False
+        # Transport key for the outer XSalsa20 of the 0x62/0x42 connect
+        # handshake (NOT the 0x40 discovery, which always uses the pairing key).
+        # Pre-adoption = pairing key; post-commit = the derived fallbackKey.
+        # Ground truth: captures/live/bridge_adopt_fresh_pass2 frames 48-59 use
+        # KEY=addDevice.fallbackKey for the reconnect handshake. See
+        # docs/protocol/adoption_commit_mechanism.md.
+        self._transport_key = pairing_key
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -251,33 +264,30 @@ class GatewaySession:
             # Commit ack: the real bridge answers ADOPT_RESPONSE with a single
             # 0x63 REQUEST_STATUS_RESPONSE(status=OK) body `01 00` — verified
             # ground truth from a fresh adoption capture
-            # (bridge_adopt_fresh_pass2_20260722.log). The `0e NN 0d 00 01 2c`
-            # we sent before is actually a PROPERTY_SET(REPORT_INTERVAL=300)
-            # config write the controller sends LATER; sending it here (a
-            # malformed reply before device info) is why the sensor never
-            # committed.
+            # (bridge_adopt_fresh_pass2_20260722.log frame 44). This is the
+            # MAC-layer ACK of the sensor's 0x54 ADOPT_RESPONSE; the sensor
+            # then commits and re-announces adopted-form 0x40.
             confirm_body = bytes([0x01, 0x00])
             tx_frame = self._build_dl_reply(frame.mac, confirm_body, dctrl=0x63)
             log.info("adoption commit-ack TX 0x63 on %.1f MHz (body=%s)",
                      dl_freq / 1e6, confirm_body.hex())
 
-            # Rotate to operational mode. Post-adoption the sensor reconnects
-            # with a fresh 0x40→0x62→0x42→0x62 handshake and BOTH sides derive
-            # the session key with addDevice.key as the KDF context — verified
-            # against real-bridge ground truth (op key 9432ba8e, capture
-            # bridge_pair_keyhook_20260722.log). Swap in the rotated context,
-            # mint a fresh keypair for the reconnect, and drop back to
-            # BEACONING so the existing handshake path derives the operational
-            # session key correctly. (The confirm above is already encrypted
-            # under the OLD session key — the rotation only affects the next
-            # handshake.)
-            self._kdf_context = self._derived_addDevice_key
+            # Do NOT rotate keys yet. The sensor has all it needs to derive its
+            # own (primary, fallback) but has not committed. We drop to
+            # BEACONING and wait to OBSERVE the commit — the adopted-form 0x40
+            # discovery `01ae94 8N 0000048f` — before rotating. Rotating now
+            # (as prior code did) is the one-way trap: a non-committing sensor
+            # keeps handshaking under the pairing key/default context, and a
+            # rotated gateway can no longer answer it. The keys stay stashed in
+            # self._derived_addDevice_{key,fb_key}; the swap happens in
+            # _handle_beaconing's 0x40 handler on the adopted-form discovery.
+            self._adopt_pending = True
             self._privkey, self._pubkey = generate_keypair()
             self.state = State.BEACONING
-            self._adopted = True
-            log.info("adopted — rotated KDF context to addDevice.key %s; "
-                     "awaiting operational reconnect",
-                     self._derived_addDevice_key.hex())
+            log.info("ADOPT round-trip done; stashed primary=%s fallback=%s; "
+                     "awaiting adopted-form 0x40 (commit) before rotating",
+                     self._derived_addDevice_key[:8].hex(),
+                     self._derived_addDevice_fb_key[:8].hex())
             return frame, tx_frame, dl_freq
 
         # Post-pairing management replies: 0x53 → 0x74 `09 NN`, 0x44 → 0x74
@@ -434,8 +444,33 @@ class GatewaySession:
             frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
             if frame.payload and len(frame.payload) >= 2 and frame.payload[0] == 0x01:
                 self.sensor_mac = frame.mac
-                log.info("DISCOVERY from %s ch=%d payload=%s",
-                         format_mac(frame.mac), ul_channel, frame.payload.hex())
+                # Adopted-form discovery carries a non-zero networkId trailer
+                # (`01ae94 8N 0000048f`); unadopted-form is `01ae94 NN 00000000`.
+                # The non-zero networkId is the reliable discriminator (byte 3's
+                # high bit is set on some unadopted forms too).
+                adopted_form = (len(frame.payload) >= 8
+                                and frame.payload[4:8] != b'\x00\x00\x00\x00')
+                log.info("DISCOVERY from %s ch=%d payload=%s%s",
+                         format_mac(frame.mac), ul_channel, frame.payload.hex(),
+                         " [ADOPTED-FORM]" if adopted_form else "")
+
+                # Commit observed: the sensor accepted our adoption and is now
+                # reconnecting. Rotate to operational keys — session KDF context
+                # = primary addDevice.key, handshake transport key = fallbackKey
+                # (ground truth: the reconnect 0x62/0x42 are encrypted with the
+                # fallbackKey, not the pairing key). Only now is rotation safe.
+                if (adopted_form and self._adopt_pending and not self._adopted
+                        and self._derived_addDevice_key
+                        and self._derived_addDevice_fb_key):
+                    self._kdf_context = self._derived_addDevice_key
+                    self._transport_key = self._derived_addDevice_fb_key
+                    self._adopted = True
+                    self._adopt_pending = False
+                    self._privkey, self._pubkey = generate_keypair()
+                    log.info("*** COMMIT OBSERVED *** rotated: KDF ctx=%s "
+                             "transport(fallbackKey)=%s",
+                             self._kdf_context[:8].hex(),
+                             self._transport_key[:8].hex())
 
                 # Build 0x62 ConnectionRsp on paired DL channel
                 # dctrl=0x62: lower 3 bits = 2 → connection handler (sub_524ac)
@@ -464,7 +499,7 @@ class GatewaySession:
                         0xE0, 0x62, frame.mac,
                         self._tx_seq_hi, self._tx_seq_lo,
                         mic, inner_payload,
-                        self.pairing_key, counter=0,
+                        self._transport_key, counter=0,
                     )
                     log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, pubkey=%s...)",
                              format_mac(frame.mac), dl_freq / 1e6, len(tx_frame),
@@ -476,7 +511,8 @@ class GatewaySession:
         elif frame.dctrl == 0x42:
             # ConnectionChallenge — extract sensor's DH pubkey and establish session
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
-            frame = decrypt_frame(frame, self.pairing_key, ul_counter_offset=frame.seq_hi)
+            # Transport key: pairing key pre-adoption, fallbackKey post-commit.
+            frame = decrypt_frame(frame, self._transport_key, ul_counter_offset=frame.seq_hi)
             log.info("0x42 PT (%dB): %s",
                      len(frame.payload) if frame.payload else 0,
                      frame.payload.hex() if frame.payload else "<empty>")
@@ -553,7 +589,8 @@ class GatewaySession:
             # Inner 16-byte plaintext (per real-bridge capture):
             #   gw_mac (6B) || sensor_mac (6B) || u32 (4B — echoed from 0x42)
             # XSalsa20 with session_key + 24-byte zero nonce, stamped with "01 03".
-            # Outer XSalsa20 uses pairing_key.
+            # Outer XSalsa20 uses the transport key (pairing key pre-adoption,
+            # fallbackKey post-commit).
             if 1 <= ul_channel <= 8:
                 dl_freq = DL_FREQ_HZ[ul_channel - 1]
                 self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
@@ -580,7 +617,7 @@ class GatewaySession:
                     0xE0, 0x62, frame.mac,
                     self._tx_seq_hi, self._tx_seq_lo,
                     mic, challenge_rsp,
-                    self.pairing_key, counter=0,
+                    self._transport_key, counter=0,
                 )
                 log.info("TX 0x62 ChallengeRsp to %s on %.1f MHz "
                          "(%d bytes outer, 16B inner encrypted)",

@@ -405,17 +405,21 @@ def test_active_0x03_decodes_and_derives_addDevice_keys():
     assert session._derived_addDevice_fb_key == expected_fb
 
 
-def test_adopt_response_rotates_to_operational_context():
-    """After adoption the sensor reconnects and both sides derive the session
-    key with addDevice.key as the KDF context (verified against bridge ground
-    truth). So on ADOPT_RESPONSE the gateway must: rotate _kdf_context to the
-    derived addDevice.key, mint a fresh keypair for the reconnect, and return
-    to BEACONING to handle the operational re-handshake."""
+def test_adopt_response_defers_rotation_until_commit_observed():
+    """Corrected commit model (docs/protocol/adoption_commit_mechanism.md):
+    on ADOPT_RESPONSE the gateway derives (primary, fallback), sends the 0x63
+    ACK, and drops to BEACONING with a fresh keypair — but does NOT rotate keys
+    yet. Rotating before the sensor commits is the one-way trap: a non-committing
+    sensor keeps handshaking under the pairing key / default context, and a
+    prematurely-rotated gateway can no longer answer it. Rotation
+    (_kdf_context -> primary, _transport_key -> fallbackKey) happens only when
+    the gateway OBSERVES the adopted-form 0x40 discovery."""
     from superlink.adopt import MSG_ADOPT_RESPONSE, kdf_E
     from superlink.decoder import build_frame
 
     session = _active_session_for_adopt()
     old_pub = session._pubkey
+    default_ctx = session._kdf_context
     session._eph_priv_r = bytes.fromhex(
         "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
     session._eph_priv_o = bytes.fromhex(
@@ -430,17 +434,67 @@ def test_adopt_response_rotates_to_operational_context():
 
     session.handle_rx(raw, ul_channel=1)
 
-    expected_key = kdf_E(session._eph_priv_r if session._eph_priv_r else
-                         bytes.fromhex("0102030405060708090a0b0c0d0e0f10"
-                                       "1112131415161718191a1b1c1d1e1f20"),
-                         dev_pub)
-    # Context rotated to the derived addDevice.key.
-    assert session._kdf_context == session._derived_addDevice_key
-    assert session._kdf_context == expected_key
-    # Back in BEACONING for the operational reconnect, with a fresh keypair.
+    expected_key = kdf_E(bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"),
+        dev_pub)
+    expected_fb = kdf_E(bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe"),
+        dev_fb_pub)
+    # Keys derived + stashed, but NOT yet rotated in.
+    assert session._derived_addDevice_key == expected_key
+    assert session._derived_addDevice_fb_key == expected_fb
+    assert session._adopt_pending is True
+    assert session._adopted is False
+    assert session._kdf_context == default_ctx           # unchanged
+    assert session._transport_key == DEFAULT_PAIRING_KEY  # unchanged
+    # Dropped to BEACONING with a fresh keypair for the reconnect.
     assert session.state == State.BEACONING
     assert session._pubkey != old_pub
-    assert session._adopted is True
-    # Ephemerals discarded after use — no reuse on next pair attempt.
     assert session._eph_priv_r is None
     assert session._eph_priv_o is None
+
+    # --- Now the sensor commits: adopted-form 0x40 `01ae94 80 0000048f`. ---
+    disc = bytes.fromhex("01ae94800000048f")
+    raw40 = build_frame(0xE0, 0x40, SENSOR_MAC, 0x7B, 0x00,
+                        b"\xAA\xBB\xCC\xDD", disc, DEFAULT_PAIRING_KEY, counter=0)
+    session.handle_rx(raw40, ul_channel=1)
+
+    # Rotation happens on the observed commit.
+    assert session._adopted is True
+    assert session._adopt_pending is False
+    assert session._kdf_context == expected_key                 # primary
+    assert session._transport_key == expected_fb                # fallbackKey
+
+
+def test_unadopted_form_0x40_does_not_rotate():
+    """A non-committing sensor re-announces unadopted-form 0x40
+    (`01ae94 NN 00000000`, zero networkId). The gateway must NOT rotate — it
+    stays on the pairing key / default context so it can keep re-attempting."""
+    from superlink.adopt import MSG_ADOPT_RESPONSE
+    from superlink.decoder import build_frame
+
+    session = _active_session_for_adopt()
+    default_ctx = session._kdf_context
+    session._eph_priv_r = bytes.fromhex(
+        "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
+    session._eph_priv_o = bytes.fromhex(
+        "21222324252627282930313233343536373839404142434445464748495051fe")
+    dev_pub = bytes.fromhex(
+        "8f0f12de419e0d8db5d7abd8aab7a6b5037c0be13c984bc8c93ae75c1438a120")
+    dev_fb_pub = bytes.fromhex(
+        "ef9a96027a8b842113c6f75d7f3f6107a531275b359a2dd107478dfaac0eac06")
+    body = bytes([MSG_ADOPT_RESPONSE, 0x9C]) + dev_pub + dev_fb_pub
+    raw = build_frame(0xE0, 0x54, SENSOR_MAC, 0x01, 0x00,
+                      b"\xAA\xBB\xCC\xDD", body, session.session_key, counter=1)
+    session.handle_rx(raw, ul_channel=1)
+
+    # Unadopted-form discovery (zero networkId).
+    disc = bytes.fromhex("01ae94490000000000"[:16])  # 01ae9449 00000000
+    raw40 = build_frame(0xE0, 0x40, SENSOR_MAC, 0x7B, 0x00,
+                        b"\xAA\xBB\xCC\xDD", disc, DEFAULT_PAIRING_KEY, counter=0)
+    session.handle_rx(raw40, ul_channel=1)
+
+    assert session._adopted is False
+    assert session._adopt_pending is True
+    assert session._kdf_context == default_ctx
+    assert session._transport_key == DEFAULT_PAIRING_KEY

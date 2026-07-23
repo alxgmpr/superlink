@@ -1,0 +1,175 @@
+# Decoded ground-truth adoption: bridge_adopt_fresh_pass2_20260722.log
+# Interleaved controller<->bridge JSON-RPC (WS) and LoRa plaintext (libsodium stream hook).
+# CTL->BR = controller command (ssl_read on bridge). BR->CTL = bridge event/response.
+# LoRa: PHASE=pre => DL(bridge->sensor), PHASE=post => UL(sensor->bridge). key= first stream key.
+#==============================================================================
+[LoRa    ] DL dctrl=43 key=SESS#0(prior adoption):                  body=a5c5
+[LoRa    ] UL dctrl=43 key=SESS#0(prior adoption):                  body=0100
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=32a9913d79355da5
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae94c60000048f
+[JSON   1] BR->CTL  {"id": "02543a45-d3b1-4c0e-86c2-8c7e255f3e4a", "name": "discoveryResult", "timestamp": 1784771581899, "type": "event"}
+[JSON   2] BR->CTL  {"adopted": true, "mac": "90:41:B2:2E:9A:53", "networkId": 1167, "signal": {"rssi": -55, "snr": 10}, "ssid": 44692}
+[LoRa    ] DL dctrl=43 key=SESS#0(prior adoption):                  body=a2df
+[LoRa    ] UL dctrl=43 key=SESS#0(prior adoption):                  body=0100
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=43e9b83a876677dd
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae94c70000048f
+[JSON   3] BR->CTL  {"id": "28f134ba-e102-43ac-8fd0-9d6b8c82692d", "name": "discoveryResult", "timestamp": 1784771611899, "type": "event"}
+[JSON   4] BR->CTL  {"adopted": true, "mac": "90:41:B2:2E:9A:53", "networkId": 1167, "signal": {"rssi": -55, "snr": 9}, "ssid": 44692}
+[JSON   5] CTL->BR  {"action": "sendMessage", "id": "77a5f52d-9bd5-4f95-af51-b870a09c1efe", "type": "request", "timestamp": 1784771616944}
+[JSON   6] CTL->BR  {"mac": "9041B22E9A53", "data": "0735", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x07 FACTORY_RESET
+[LoRa    ] DL dctrl=43 key=SESS#0(prior adoption):                  body=b177
+[LoRa    ] UL dctrl=43 key=SESS#0(prior adoption):                  body=0100
+[LoRa    ] DL dctrl=74 key=SESS#0(prior adoption):                  body=0735
+[LoRa    ] UL dctrl=74 key=SESS#0(prior adoption):                  body=813a
+[LoRa    ] DL dctrl=54 key=SESS#0(prior adoption):                  body=be5e2c
+[LoRa    ] UL dctrl=54 key=SESS#0(prior adoption):                  body=013500
+[JSON   7] BR->CTL  {"error": "", "errorCode": 0, "id": "77a5f52d-9bd5-4f95-af51-b870a09c1efe", "timestamp": 1784771638307, "type": "response"}
+[JSON   8] BR->CTL  {}
+[JSON   9] BR->CTL  {"id": "d701d0fb-af04-4418-b035-f6b7246108f2", "name": "messageReceived", "timestamp": 1784771638307, "type": "event"}
+[JSON  10] BR->CTL  {"data": "013500", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -50, "snr": 8}}   <== msgId 0x01 REQ_STATUS_RSP
+[JSON  11] CTL->BR  {"action": "removeDevice", "id": "626cf1b0-551a-4bd0-ba38-93e94fa22548", "type": "request", "timestamp": 1784771638323}
+[JSON  12] CTL->BR  {"mac": "9041B22E9A53"}
+[JSON  13] BR->CTL  {"error": "", "errorCode": 0, "id": "626cf1b0-551a-4bd0-ba38-93e94fa22548", "timestamp": 1784771638325, "type": "response"}
+[JSON  14] BR->CTL  {}
+[JSON  15] BR->CTL  {"id": "c7c0d8d9-c1d9-4cf7-8596-9ef6daaac598", "name": "devsInfoChanged", "timestamp": 1784771638325, "type": "event"}
+[JSON  16] BR->CTL  {"capacity": {"available": 100, "max": 100}}
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=c25113dc58e7fd0b
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940000000000
+[JSON  17] BR->CTL  {"id": "b5969fb5-db8f-4348-92bf-86f616282b46", "name": "discoveryResult", "timestamp": 1784771644254, "type": "event"}
+[JSON  18] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -56, "snr": 9}, "ssid": 44692}
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=08e7fc1c302e969c
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940100000000
+[JSON  19] BR->CTL  {"id": "8ead77ad-1881-43b1-b59b-1dafe42a387a", "name": "discoveryResult", "timestamp": 1784771649252, "type": "event"}
+[JSON  20] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -48, "snr": 8}, "ssid": 44692}
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=3642ea211eae2194
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940200000000
+[JSON  21] BR->CTL  {"id": "0e039c88-33a9-426f-8c34-b2377fbade4e", "name": "discoveryResult", "timestamp": 1784771654252, "type": "event"}
+[JSON  22] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -46, "snr": 9}, "ssid": 44692}
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=64b13e3ceac6d968
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940000000000
+[JSON  23] BR->CTL  {"id": "22d3a8d7-9d1d-44b6-abf6-3fd2ca592a9f", "name": "discoveryResult", "timestamp": 1784771663291, "type": "event"}
+[JSON  24] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -57, "snr": 9}, "ssid": 44692}
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=a081979f71e724b0
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940100000000
+[JSON  25] BR->CTL  {"id": "c59236e7-82e8-4dd4-a59b-693c15564bc1", "name": "discoveryResult", "timestamp": 1784771668287, "type": "event"}
+[JSON  26] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 9}, "ssid": 44692}
+[JSON  27] CTL->BR  {"action": "addDevice", "id": "40d45d7c-8d2b-4c9b-81f4-47cdcecde42c", "type": "request", "timestamp": 1784771670424}
+[JSON  28] CTL->BR  {"mac": "9041B22E9A53", "key": "c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"}
+[JSON  29] BR->CTL  {"error": "", "errorCode": 0, "id": "40d45d7c-8d2b-4c9b-81f4-47cdcecde42c", "timestamp": 1784771670426, "type": "response"}
+[JSON  30] BR->CTL  {}
+[JSON  31] BR->CTL  {"id": "aeed7cd3-7f4c-4ed9-8210-3017c863ee61", "name": "devsInfoChanged", "timestamp": 1784771670427, "type": "event"}
+[JSON  32] BR->CTL  {"capacity": {"available": 99, "max": 100}}
+[JSON  33] CTL->BR  {"action": "sendMessage", "id": "f9a97b11-52d4-4bf3-97a6-c0a97cb67447", "type": "request", "timestamp": 1784771670448}
+[JSON  34] CTL->BR  {"mac": "9041B22E9A53", "data": "02364980c2eed80faf1978fd85080262a6bd4f7ef67fc03f12ced1cd8e7820dd78397e547ae79423de8619865021c36c694033463ac35d8dba5883ebf1b410a2ec530000048f", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x02 ADOPT_REQUEST
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=7879b56a08ed5e53
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae940200000000
+[LoRa    ] DL dctrl=62 key=PAIRING(47be3dff):                       body=01018eefa38e4053d3365efa8fd95fbde7634aeb6c54ee82cf49ec21d2e181cbe37c0a
+[LoRa    ] UL dctrl=62 key=PAIRING(47be3dff):                       body=e5bd1721257a6f5a609b265d1ad7056a735fa21773be258b32f5385254dc5f6e52489e
+[JSON  35] BR->CTL  {"id": "25ea778d-6953-4aa8-937b-5ce753c8b133", "name": "discoveryResult", "timestamp": 1784771673285, "type": "event"}
+[JSON  36] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 8}, "ssid": 44692}
+[LoRa    ] DL dctrl=42 key=PAIRING(47be3dff):                       body=596f37ee382b62211b35c1c312997183854a7c8fcb8c9333efb5a5e69208fa10bde80b
+[LoRa    ] UL dctrl=42 key=PAIRING(47be3dff):                       body=010201c98883447f7eb8301859f6fb536e91017db2b1c7fd070211871aeb4cfde5c02c
+[LoRa    ] DL dctrl=00 key=SESS#1(5f827514,ctx=default):            body=3775fd045549
+[LoRa    ] UL dctrl=00 key=SESS#1(5f827514,ctx=default):            body=9a531d8c3a5d
+[LoRa    ] DL dctrl=00 key=SESS#1(5f827514,ctx=default):            body=83dc9041b22e9a531d8c3a5d
+[LoRa    ] UL dctrl=00 key=SESS#1(5f827514,ctx=default):            body=2efa70c9dd3a78d2109ca7ef
+[LoRa    ] DL dctrl=62 key=PAIRING(47be3dff):                       body=0103fb7b72382efa70c9dd3a78d2109ca7ef
+[LoRa    ] UL dctrl=62 key=PAIRING(47be3dff):                       body=39b0031600024eb9de6723f36792527e4b15
+[LoRa    ] DL dctrl=53 key=SESS#1(5f827514,ctx=default):            body=ee41
+[LoRa    ] UL dctrl=53 key=SESS#1(5f827514,ctx=default):            body=0100
+[LoRa    ] DL dctrl=74 key=SESS#1(5f827514,ctx=default):            body=02364980c2eed80faf1978fd85080262a6bd4f7ef67fc03f12ced1cd8e7820dd78397e
+[LoRa    ] UL dctrl=74 key=SESS#1(5f827514,ctx=default):            body=58f8cf645db83dfbd7a72511e5705909e81e9fc57521eaea2c536f45e21ab81a8d8dae
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=6bc5fcf111d0103b
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae944300000000
+[JSON  37] BR->CTL  {"id": "d67cc499-8456-4080-b9ba-b3db0ddb7791", "name": "discoveryResult", "timestamp": 1784771678697, "type": "event"}
+[JSON  38] BR->CTL  {"adopted": false, "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -51, "snr": 9}, "ssid": 44692}
+[LoRa    ] DL dctrl=54 key=SESS#1(5f827514,ctx=default):            body=ea7d897ace97b68b46e61aea5baba10ece549378e21c3df43cd2d732d1bf0fc990daa7
+[LoRa    ] UL dctrl=54 key=SESS#1(5f827514,ctx=default):            body=0336136c4072b5c99f3d7705048f7af873e530b3902bd13d861c7a0f9399d3a8dc60c2
+[JSON  39] BR->CTL  {"error": "", "errorCode": 0, "id": "f9a97b11-52d4-4bf3-97a6-c0a97cb67447", "timestamp": 1784771679864, "type": "response"}
+[JSON  40] BR->CTL  {}
+[JSON  41] BR->CTL  {"id": "4657bbea-cfcf-4561-b195-a3161879a8ea", "name": "messageReceived", "timestamp": 1784771679865, "type": "event"}
+[JSON  42] BR->CTL  {"data": "0336136C4072B5C99F3D7705048F7AF873E530B3902BD13D861C7A0F9399D3A8DC60C26E425D60238E890F9FB29358A8E01C2D2A0BA51DA60A878D215F0976C4B818", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 9}}   <== msgId 0x03 ADOPT_RESPONSE
+[LoRa    ] DL dctrl=63 key=SESS#1(5f827514,ctx=default):            body=0100
+[LoRa    ] UL dctrl=63 key=SESS#1(5f827514,ctx=default):            body=6f71
+[JSON  43] CTL->BR  {"action": "removeDevice", "id": "3545a562-9aef-47df-bc71-dfefc3d8d08e", "type": "request", "timestamp": 1784771680889}
+[JSON  44] CTL->BR  {"mac": "9041B22E9A53"}
+[JSON  45] BR->CTL  {"error": "", "errorCode": 0, "id": "3545a562-9aef-47df-bc71-dfefc3d8d08e", "timestamp": 1784771680890, "type": "response"}
+[JSON  46] BR->CTL  {}
+[JSON  47] BR->CTL  {"id": "699352fc-d9a0-4f6e-9338-0fbec199a625", "name": "devsInfoChanged", "timestamp": 1784771680890, "type": "event"}
+[JSON  48] BR->CTL  {"capacity": {"available": 100, "max": 100}}
+[JSON  49] CTL->BR  {"action": "addDevice", "id": "729b8865-da5f-434f-8534-61a40feb6a8a", "type": "request", "timestamp": 1784771680952}
+[JSON  50] CTL->BR  {"mac": "9041B22E9A53", "key": "0fc320863c41f4280d541af154522de27c19f48dc889a54450039dffe8053707", "fallbackKey": "d704a818b06d585076274149dd972b5740698e139cd781f61769189b5c69557d"}
+[JSON  51] BR->CTL  {"error": "", "errorCode": 0, "id": "729b8865-da5f-434f-8534-61a40feb6a8a", "timestamp": 1784771680955, "type": "response"}
+[JSON  52] BR->CTL  {}
+[JSON  53] BR->CTL  {"id": "2cea4e0d-fee0-44cf-9314-0f4d48433783", "name": "devsInfoChanged", "timestamp": 1784771680955, "type": "event"}
+[JSON  54] BR->CTL  {"capacity": {"available": 99, "max": 100}}
+[JSON  55] CTL->BR  {"action": "sendMessage", "id": "963c9945-1ee2-434e-b106-ed30093e4eb6", "type": "request", "timestamp": 1784771680982}
+[JSON  56] CTL->BR  {"mac": "9041B22E9A53", "data": "0937", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x09 DEVICE_INFO_REQ
+[LoRa    ] DL dctrl=40 key=PAIRING(47be3dff):                       body=a4ab0c04bb5a8263
+[LoRa    ] UL dctrl=40 key=PAIRING(47be3dff):                       body=01ae94800000048f
+[JSON  57] BR->CTL  {"id": "592695dd-5d41-4844-88bf-41623b0ee830", "name": "discoveryResult", "timestamp": 1784771683964, "type": "event"}
+[JSON  58] BR->CTL  {"adopted": true, "mac": "90:41:B2:2E:9A:53", "networkId": 1167, "signal": {"rssi": -52, "snr": 9}, "ssid": 44692}
+[LoRa    ] DL dctrl=42 key=FALLBACKKEY(d704a818):                   body=7ba2
+[LoRa    ] UL dctrl=42 key=FALLBACKKEY(d704a818):                   body=0100
+[LoRa    ] DL dctrl=62 key=FALLBACKKEY(d704a818):                   body=01016e25a04113f945b140cc3ac9724f05d53a0a2b6e71a3d6c76e6bf9849e1c6e410a
+[LoRa    ] UL dctrl=62 key=FALLBACKKEY(d704a818):                   body=510972e95da044ba72d8cda1736349503b6f927cb1172b7738d0199fb6d257c5d4521f
+[LoRa    ] DL dctrl=42 key=FALLBACKKEY(d704a818):                   body=36623160a40cd0cd5fdce60b52cc5a1bc02d5629c5ab5a5202ad3c14d65fc882b71937
+[LoRa    ] UL dctrl=42 key=FALLBACKKEY(d704a818):                   body=010201f80f976b534949e328d014cfaf74697ca9a460e8005ca11cff5862041f5c5730
+[LoRa    ] DL dctrl=00 key=SESS#2(06a55c5d,ctx=primary):            body=7e1774c358e5
+[LoRa    ] UL dctrl=00 key=SESS#2(06a55c5d,ctx=primary):            body=9a5386961c64
+[LoRa    ] DL dctrl=00 key=SESS#2(06a55c5d,ctx=primary):            body=83dc9041b22e9a5386961c64
+[LoRa    ] UL dctrl=00 key=SESS#2(06a55c5d,ctx=primary):            body=67986214f6afab38a46d9ff0
+[LoRa    ] DL dctrl=62 key=FALLBACKKEY(d704a818):                   body=01035bdc57e267986214f6afab38a46d9ff0
+[LoRa    ] UL dctrl=62 key=FALLBACKKEY(d704a818):                   body=d91ed802500279288681d618b3e8098ca5e8
+[LoRa    ] DL dctrl=53 key=SESS#2(06a55c5d,ctx=primary):            body=563c
+[LoRa    ] UL dctrl=53 key=SESS#2(06a55c5d,ctx=primary):            body=0100
+[LoRa    ] DL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=0937
+[LoRa    ] UL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=2e31
+[LoRa    ] DL dctrl=54 key=SESS#2(06a55c5d,ctx=primary):            body=39689ff2deeb6c274b6c15fb21a6f6baf861b09c334a
+[LoRa    ] UL dctrl=54 key=SESS#2(06a55c5d,ctx=primary):            body=0c00010000000006020064dd080300590b7c00140001
+[JSON  59] BR->CTL  {"error": "", "errorCode": 0, "id": "963c9945-1ee2-434e-b106-ed30093e4eb6", "timestamp": 1784771689003, "type": "response"}
+[JSON  60] BR->CTL  {}
+[JSON  61] BR->CTL  {"id": "001c0958-7e5d-4061-96f0-74c961ee273f", "name": "messageReceived", "timestamp": 1784771689003, "type": "event"}
+[JSON  62] BR->CTL  {"data": "0C00010000000006020064DD080300590B7C00140001", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -52, "snr": 9}}   <== msgId 0x0c PROPERTY_REPORT
+[LoRa    ] DL dctrl=63 key=SESS#2(06a55c5d,ctx=primary):            body=0100
+[LoRa    ] UL dctrl=63 key=SESS#2(06a55c5d,ctx=primary):            body=28d8
+[LoRa    ] DL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=73759898aad5507b2bbb53fd93b5c7234584e674dce0a92dbe9561e8b1ba3520a80ba0
+[LoRa    ] UL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=0a37ae940001000100010cb24d9d0452b4ba379a5749018003ab8809ac01fb03080f11
+[JSON  63] BR->CTL  {"id": "085af55a-0454-460f-a50e-7122e0a570a6", "name": "messageReceived", "timestamp": 1784771690086, "type": "event"}
+[JSON  64] BR->CTL  {"data": "0A37AE940001000100010CB24D9D0452B4BA379A5749018003AB8809AC01FB03080F110E01010402010311010A0D01020E01012001011202061301040301041401011501011601010F0101100101", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 8}}   <== msgId 0x0a DEVICE_INFO_REPORT
+[JSON  65] CTL->BR  {"action": "sendMessage", "id": "b8b1667b-d420-430e-9e8b-a76a266297ea", "type": "request", "timestamp": 1784771690100}
+[JSON  66] CTL->BR  {"mac": "9041B22E9A53", "data": "0e380d00012c", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x0e PROPERTY_SET
+[LoRa    ] DL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=0e380d00012c
+[LoRa    ] UL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=eb008e517578
+[JSON  67] CTL->BR  {"action": "sendMessage", "id": "5f82f906-6b89-44d1-8629-26d6c1c077ab", "type": "request", "timestamp": 1784771690108}
+[JSON  68] CTL->BR  {"mac": "9041B22E9A53", "data": "0e39150001", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x0e PROPERTY_SET
+[JSON  69] CTL->BR  {"action": "sendMessage", "id": "bdada641-7a32-491d-86d9-b30d18c8cb0f", "type": "request", "timestamp": 1784771690115}
+[JSON  70] CTL->BR  {"mac": "9041B22E9A53", "data": "0e3a100001", "duty": true, "ack": true, "timeout": 900000}   <== msgId 0x0e PROPERTY_SET
+[LoRa    ] DL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=edcd093097f4
+[LoRa    ] UL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=0c380d00012c
+[LoRa    ] DL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=0e39150001
+[LoRa    ] UL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=f3d37c999b
+[JSON  71] BR->CTL  {"error": "", "errorCode": 0, "id": "b8b1667b-d420-430e-9e8b-a76a266297ea", "timestamp": 1784771691135, "type": "response"}
+[JSON  72] BR->CTL  {}
+[JSON  73] BR->CTL  {"id": "94ab4792-9e9d-4fd2-a792-05893be51cad", "name": "messageReceived", "timestamp": 1784771691137, "type": "event"}
+[JSON  74] BR->CTL  {"data": "0C380D00012C", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -52, "snr": 8}}   <== msgId 0x0c PROPERTY_REPORT
+[LoRa    ] DL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=ead1771a66
+[LoRa    ] UL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=0c39150001
+[LoRa    ] DL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=0e3a100001
+[LoRa    ] UL dctrl=74 key=SESS#2(06a55c5d,ctx=primary):            body=ea20b4807b
+[JSON  75] BR->CTL  {"error": "", "errorCode": 0, "id": "5f82f906-6b89-44d1-8629-26d6c1c077ab", "timestamp": 1784771692184, "type": "response"}
+[JSON  76] BR->CTL  {}
+[JSON  77] BR->CTL  {"id": "84a30864-3fa9-4423-ae86-973be8dc5a77", "name": "messageReceived", "timestamp": 1784771692185, "type": "event"}
+[JSON  78] BR->CTL  {"data": "0C39150001", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 9}}   <== msgId 0x0c PROPERTY_REPORT
+[LoRa    ] DL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=6e643b3af3
+[LoRa    ] UL dctrl=44 key=SESS#2(06a55c5d,ctx=primary):            body=0c3a100000
+[JSON  79] BR->CTL  {"error": "", "errorCode": 0, "id": "bdada641-7a32-491d-86d9-b30d18c8cb0f", "timestamp": 1784771693224, "type": "response"}
+[JSON  80] BR->CTL  {}
+[JSON  81] BR->CTL  {"id": "f3d667d1-bf4f-4d1d-a367-21420c1a4e74", "name": "messageReceived", "timestamp": 1784771693224, "type": "event"}
+[JSON  82] BR->CTL  {"data": "0C3A100000", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 9}}   <== msgId 0x0c PROPERTY_REPORT
+[LoRa    ] DL dctrl=54 key=SESS#2(06a55c5d,ctx=primary):            body=0dd8bc2839
+[LoRa    ] UL dctrl=54 key=SESS#2(06a55c5d,ctx=primary):            body=0c000f0001
+[JSON  83] BR->CTL  {"id": "3048aab6-84e8-45a1-87e1-dbc90e4e7952", "name": "messageReceived", "timestamp": 1784771695240, "type": "event"}
+[JSON  84] BR->CTL  {"data": "0C000F0001", "mac": "90:41:B2:2E:9A:53", "signal": {"rssi": -53, "snr": 9}}   <== msgId 0x0c PROPERTY_REPORT
+[LoRa    ] DL dctrl=63 key=SESS#2(06a55c5d,ctx=primary):            body=0100
+[LoRa    ] UL dctrl=63 key=SESS#2(06a55c5d,ctx=primary):            body=713e
