@@ -268,8 +268,25 @@ class GatewaySession:
             # MAC-layer ACK of the sensor's 0x54 ADOPT_RESPONSE; the sensor
             # then commits and re-announces adopted-form 0x40.
             confirm_body = bytes([0x01, 0x00])
-            tx_frame = self._build_dl_reply(frame.mac, confirm_body, dctrl=0x63)
-            log.info("adoption commit-ack TX 0x63 on %.1f MHz (body=%s)",
+            # MAC-layer ACK of the sensor's 0x54 ADOPT_RESPONSE. Ground truth
+            # (bridge_adopt_fresh_pass2 frame 44): the 0x63 ACK ECHOES the acked
+            # frame's seq_hi and increments seq_lo by 1 (0x81 -> 0x82); the DL
+            # nonce counter follows the seq_hi-1 offset seen across the ADOPT
+            # region. Building it from our own independent counter (as
+            # _build_dl_reply does) leaves the ACK uncorrelated to the
+            # ADOPT_RESPONSE, so the sensor never sees its response acked and
+            # reverts to unadopted — the observed failure.
+            ack_seq_hi = frame.seq_hi
+            ack_seq_lo = (frame.seq_lo + 1) & 0xFF
+            ack_ctr = (frame.seq_hi - 1) & 0xFF
+            ack_header = (bytes([0xE0, 0x63]) + frame.mac
+                          + bytes([ack_seq_hi, ack_seq_lo]))
+            ack_mic = compute_mic(ack_header, confirm_body)
+            tx_frame = build_frame(
+                0xE0, 0x63, frame.mac, ack_seq_hi, ack_seq_lo,
+                ack_mic, confirm_body, self.session_key, counter=ack_ctr)
+            log.info("adoption commit-ack TX 0x63 seq=%02X.%02X ctr=%d on "
+                     "%.1f MHz (body=%s)", ack_seq_hi, ack_seq_lo, ack_ctr,
                      dl_freq / 1e6, confirm_body.hex())
 
             # Do NOT rotate keys yet. The sensor has all it needs to derive its
