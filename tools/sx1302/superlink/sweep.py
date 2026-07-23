@@ -208,19 +208,20 @@ def build_fuzz_corpus() -> list:
     # PROPERTY_REPORT/SET with a truncated trailing entry (missing value bytes).
     add("pset-truncated-entry", [0x0e, T, 0x0d, 0x00])
 
-    # --- oversized / boundary (buffer overflow attempts) -------------------
-    # A LoRa frame is 10B header + 4B MIC + body, capped at 256B on the PHY, so
-    # the app-message body maxes at 242B (240B of data after msgId+tag). Push
-    # PING right up to that edge to probe the echo buffer's size.
-    for n in (0xEE, 0xEF, 0xF0):                       # 238,239,240 data bytes
-        add(f"ping-{n:#x}", [0x04, T] + [0xC0 + (i & 0xF) for i in range(n)])
+    # --- mid-size structural / undefined cases (safe frame sizes) ----------
     add("undef-0x0d-bigbody", [0x0d, T] + [0x55] * 0x40)
     add("undef-0x00-bigbody", [0x00, T] + [0x66] * 0x40)
     add("preq-200ids", [0x0b, T] + list(range(200)))
     add("dinfo-report-wrongdir", [0x0a, T, 0x00])      # 0a is device→ctl
     add("fw-chunk-resp-garbage", [0x11, T] + [0] * 8 + [0x90] * 16)
-    # PROPERTY_SET value right up to the frame limit (237B value + 5B header).
-    add("pset-oversize-value", [0x0e, T, 0x0d, 0x00, 0xEC] + [0x41] * 0xEC)
+
+    # --- oversized / boundary (LAST — biggest brick/crash risk) ------------
+    # The SX1302 TX tops out just under a 256B frame (238B PING data → 254B
+    # frame works; 240B → 256B fails). Stay at 224B data (frame ~240B) to probe
+    # a large echo/copy buffer without tripping the concentrator's own limit.
+    for n in (0xC0, 0xD0, 0xE0):                       # 192,208,224 data bytes
+        add(f"ping-{n:#x}", [0x04, T] + [0xC0 + (i & 0xF) for i in range(n)])
+    add("pset-oversize-value", [0x0e, T, 0x0d, 0x00, 0xDC] + [0x41] * 0xDC)
     return cases
 
 

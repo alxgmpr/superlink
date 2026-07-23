@@ -494,6 +494,52 @@ class GatewaySession:
         return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
                            self.session_key, counter=ctr)
 
+    # Where committed addDevice keys are cached so the gateway can rejoin an
+    # already-adopted sensor after a restart (no factory-reset needed).
+    KEYFILE = "/tmp/superlink_adopt.json"
+
+    def _persist_adopt_keys(self) -> None:
+        """Save the committed addDevice keys so --reconnect can reuse them."""
+        try:
+            import json
+            with open(self.KEYFILE, "w") as f:
+                json.dump({
+                    "mac": self.sensor_mac.hex() if self.sensor_mac else None,
+                    "primary": self._derived_addDevice_key.hex(),
+                    "fallback": self._derived_addDevice_fb_key.hex(),
+                }, f)
+            log.info("persisted addDevice keys to %s", self.KEYFILE)
+        except Exception as exc:  # non-fatal
+            log.warning("could not persist adopt keys: %s", exc)
+
+    def load_adopt_keys(self) -> bool:
+        """Enter the adopted/reconnect state from cached keys (KDF ctx=primary,
+        transport=fallbackKey). Returns True if keys were loaded. Lets the
+        gateway rejoin an already-adopted sensor without a fresh adoption."""
+        try:
+            import json
+            with open(self.KEYFILE) as f:
+                d = json.load(f)
+            self._derived_addDevice_key = bytes.fromhex(d["primary"])
+            self._derived_addDevice_fb_key = bytes.fromhex(d["fallback"])
+            self._kdf_context = self._derived_addDevice_key
+            self._transport_key = self._derived_addDevice_fb_key
+            self._adopted = True
+            if d.get("mac"):
+                self.sensor_mac = bytes.fromhex(d["mac"])
+            log.info("RECONNECT: loaded addDevice keys (primary=%s "
+                     "fallback=%s) — will rejoin adopted sensor",
+                     self._derived_addDevice_key[:8].hex(),
+                     self._derived_addDevice_fb_key[:8].hex())
+            return True
+        except FileNotFoundError:
+            log.warning("--reconnect: no cached keys at %s (need one fresh "
+                        "adoption first)", self.KEYFILE)
+            return False
+        except Exception as exc:
+            log.warning("--reconnect: could not load keys: %s", exc)
+            return False
+
     def _scan_data_counter(self, frame) -> int | None:
         """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
 
@@ -600,6 +646,7 @@ class GatewaySession:
                              "transport(fallbackKey)=%s",
                              self._kdf_context[:8].hex(),
                              self._transport_key[:8].hex())
+                    self._persist_adopt_keys()
 
                 # Build 0x62 ConnectionRsp on paired DL channel
                 # dctrl=0x62: lower 3 bits = 2 → connection handler (sub_524ac)
@@ -826,6 +873,12 @@ def parse_gw_args(argv: list[str] | None = None) -> argparse.Namespace:
              "opcodes) and flags anomalous responses. AGGRESSIVE — can crash "
              "the sensor. Pairs with SWD observation of the parser.",
     )
+    parser.add_argument(
+        "--reconnect", action="store_true",
+        help="Rejoin an already-adopted sensor using addDevice keys cached from "
+             "a prior commit (/tmp/superlink_adopt.json) — no factory-reset "
+             "needed after a gateway restart.",
+    )
     return parser.parse_args(argv)
 
 
@@ -921,6 +974,8 @@ def main():
         log.info("Concentrator started (HAL %s)", hal.version())
 
         session.start()
+        if args.reconnect:
+            session.load_adopt_keys()
         log.info("Gateway MAC: %s — listening on UL channels", format_mac(gw_mac))
 
         while True:
@@ -944,9 +999,11 @@ def main():
                         hal.send(tx_freq, tx_data, bandwidth=BW_500KHZ,
                                  tx_timestamp_us=tx_ts,
                                  invert_pol=args.invert_iq)
-                    except ValueError as exc:
-                        # A crafted/fuzz frame can exceed the 256B PHY limit —
-                        # skip it rather than killing the gateway mid-sweep.
+                    except (ValueError, RuntimeError) as exc:
+                        # A crafted/fuzz frame can exceed the PHY/concentrator TX
+                        # limit (ValueError >256B, or lgw_send rc=-1 RuntimeError
+                        # near the edge) — skip it rather than killing the
+                        # gateway mid-sweep.
                         log.warning("TX skipped (%d bytes): %s",
                                     len(tx_data), exc)
                         continue
