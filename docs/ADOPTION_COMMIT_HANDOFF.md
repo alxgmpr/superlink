@@ -1,5 +1,14 @@
 # SuperLink adoption-commit — fresh-session handoff
 
+## ✅ SOLVED 2026-07-23 — adoption commits end-to-end (merged to main)
+This handoff is now historical. The sensor commits and holds an operational
+session. Root cause was the **`0x63` ACK sequencing** (must echo the sensor's
+`0x54` ADOPT_RESPONSE `seq_hi` and set `seq_lo = acked+1`) plus the **dual-key
+reconnect** (fallbackKey transport + primary `addDevice.key` KDF context, rotated
+only on observing adopted-form `0x40`). See `docs/protocol/adoption_commit_mechanism.md`
+and the decoded transcript. The app-layer memory-disclosure sweeps
+(PROPERTY_REQUEST / message-id / PING) all ran clean/negative on fw 1.1.1.
+
 ## ⚠️ UPDATE 2026-07-22 — the reference capture has been fully decoded
 
 The single reference capture was decoded at BOTH the controller↔bridge JSON-RPC
