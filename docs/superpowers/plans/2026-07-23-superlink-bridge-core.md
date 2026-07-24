@@ -1080,7 +1080,7 @@ from superlink.bridge.core import OutgoingFrame
 from superlink.bridge.store import DeviceRecord
 from superlink.bridge.profiles import ProfileRegistry
 from superlink.bridge.events import Event
-from fixtures.captured_frames import (
+from tests.fixtures.captured_frames import (
     SENSOR_MAC, DEFAULT_PAIRING_KEY, FRAME_36B_RAW,
 )
 
@@ -1170,7 +1170,7 @@ from superlink.bridge.store import InMemoryDeviceStore
 from superlink.bridge.profiles import ProfileRegistry
 from superlink.bridge.session import DeviceSession
 from superlink.bridge.events import DeviceDiscovered, PropertyEvent
-from fixtures.captured_frames import (
+from tests.fixtures.captured_frames import (
     SENSOR_MAC, DEFAULT_PAIRING_KEY, FRAME_36B_RAW,
 )
 
