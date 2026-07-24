@@ -1093,9 +1093,12 @@ def _session():
 
 
 def test_feed_returns_frames_and_events_tuple():
+    from superlink.decoder import parse_frame
     s = _session()
-    frames, events = s.feed_raw_for_test(FRAME_36B_RAW, channel=1, now=1.0) \
-        if hasattr(s, "feed_raw_for_test") else ([], [])
+    frame = parse_frame(FRAME_36B_RAW)   # real parsed SuperLinkFrame
+    result = s.feed(frame, channel=1, now=1.0)
+    assert isinstance(result, tuple) and len(result) == 2
+    frames, events = result
     assert isinstance(frames, list) and isinstance(events, list)
 
 
