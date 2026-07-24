@@ -14,8 +14,16 @@ from datetime import datetime, timezone
 
 from .adopt import DEFAULT_NETWORK_ID
 from .decoder import format_mac, parse_frame, SuperLinkFrame
-from .bridge.core import OutgoingFrame
+from .bridge.core import BridgeCore, OutgoingFrame
+from .bridge.observers import SweepObserver
+from .bridge.profiles import ProfileRegistry
 from .bridge.session import DeviceSession, State
+from .bridge.store import JsonDeviceStore
+
+# Factory-default LoRa pairing key (docs/protocol/crypto_and_pairing.md).
+PAIRING_KEY = bytes.fromhex(
+    "47be3dffb41ea35749c9290e6d2124e6b3e3842ab4e443bd0ac41eda045c2dbe"
+)
 
 log = logging.getLogger(__name__)
 
@@ -482,11 +490,39 @@ def main():
         log.info("PROPERTY_REQUEST sweep enabled: %d ids, batch=%d",
                  len(ids), args.sweep_batch)
 
+    # --- Bridge core substrate (multi-device registry + persistence) --------
+    # The pure BridgeCore engine (bridge/core.py) is the runtime's migration
+    # target: a ProfileRegistry (data-driven property decode), a persistent
+    # DeviceStore, a DeviceSession factory, and the orchestrator itself. When an
+    # RE sweep is configured, the SweepObserver is subscribed to the core's typed
+    # event stream so decoded DEVICE_INFO/PROPERTY reports flow into the sweep
+    # controller through the public API instead of the private ingest hook.
+    #
+    # NOTE ON THE SPLIT (why the RX loop below still drives GatewaySession):
+    # The RF-critical path — beaconing, the Curve25519 adoption handshake, the
+    # post-rotation burst TX (`_pending_tx_frames`), --reconnect key reload, and
+    # the sweep's *probe-send* sequencing on the sensor's 0x53/0x44/0x54 command
+    # windows — lives in GatewaySession's command-window hooks and cannot be
+    # reproduced by the observer (which only ingests reports) without changing
+    # wire behavior. Those changes are unverifiable without the Pi/SX1302 + a
+    # live sensor, so GatewaySession remains the driver here; the core+observer
+    # are wired per the refactor spec and exercised by tests/test_bridge_observer.
+    profiles = ProfileRegistry.load()
+    store = JsonDeviceStore("/tmp/superlink_devices.json")
+
+    def _session_factory(record):
+        return DeviceSession(
+            record, gw_mac, PAIRING_KEY, profiles=profiles,
+            beacon_interval=args.beacon_interval, kdf_context=kdf_context,
+            mgmt_counter_start=args.mgmt_counter_start)
+
+    core = BridgeCore(store, profiles, _session_factory, auto_adopt=False)
+    if sweep is not None:
+        core.subscribe(SweepObserver(core, sweep).on_event)
+
     session = GatewaySession(
         gw_mac=gw_mac,
-        pairing_key=bytes.fromhex(
-            "47be3dffb41ea35749c9290e6d2124e6b3e3842ab4e443bd0ac41eda045c2dbe"
-        ),
+        pairing_key=PAIRING_KEY,
         beacon_interval=args.beacon_interval,
         kdf_context=kdf_context,
         mgmt_counter_start=args.mgmt_counter_start,
