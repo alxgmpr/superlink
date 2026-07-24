@@ -2,6 +2,7 @@
 from __future__ import annotations
 import csv
 import logging
+import queue
 import time
 from typing import Callable
 
@@ -30,6 +31,7 @@ class BridgeRuntime:
         self._stop = False
         self._csv_writer = None
         self._csv_file = None
+        self._action_queue: queue.Queue = queue.Queue()
         self.core = BridgeCore(self.store, self.profiles, self._session_factory,
                                auto_adopt=False)
         self.core.subscribe(self._on_event)
@@ -85,7 +87,20 @@ class BridgeRuntime:
             except (ValueError, RuntimeError) as exc:
                 log.warning("TX skipped (%d bytes): %s", len(f.data), exc)
 
+    def submit_action(self, action) -> None:
+        """Thread-safe: enqueue an action to be applied on the poll-loop thread."""
+        self._action_queue.put(action)
+
+    def _drain_actions(self) -> None:
+        while True:
+            try:
+                action = self._action_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.core.submit(action)
+
     def poll_once(self, now: float) -> None:
+        self._drain_actions()
         for pkt in self.hal.receive():
             if not pkt.crc_ok:
                 continue
