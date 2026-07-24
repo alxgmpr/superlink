@@ -2,6 +2,7 @@
 from __future__ import annotations
 import csv
 import logging
+import queue
 import time
 from typing import Callable
 
@@ -30,6 +31,7 @@ class BridgeRuntime:
         self._stop = False
         self._csv_writer = None
         self._csv_file = None
+        self._action_queue: queue.Queue = queue.Queue()
         self.core = BridgeCore(self.store, self.profiles, self._session_factory,
                                auto_adopt=False)
         self.core.subscribe(self._on_event)
@@ -85,7 +87,20 @@ class BridgeRuntime:
             except (ValueError, RuntimeError) as exc:
                 log.warning("TX skipped (%d bytes): %s", len(f.data), exc)
 
+    def submit_action(self, action) -> None:
+        """Thread-safe: enqueue an action to be applied on the poll-loop thread."""
+        self._action_queue.put(action)
+
+    def _drain_actions(self) -> None:
+        while True:
+            try:
+                action = self._action_queue.get_nowait()
+            except queue.Empty:
+                break
+            self.core.submit(action)
+
     def poll_once(self, now: float) -> None:
+        self._drain_actions()
         for pkt in self.hal.receive():
             if not pkt.crc_ok:
                 continue
@@ -133,6 +148,19 @@ def build_runtime(config: RuntimeConfig, hal, store=None) -> BridgeRuntime:
     return BridgeRuntime(config, hal, store=store)
 
 
+def start_mqtt_if_configured(runtime, config, client=None):
+    """Start the MQTT bridge if config.mqtt is set; return it (or None)."""
+    if config.mqtt is None:
+        return None
+    from .mqtt import MqttBridge
+    if client is None:
+        import paho.mqtt.client as mqtt
+        client = mqtt.Client()
+    bridge = MqttBridge(config.mqtt, runtime, client)
+    bridge.start()
+    return bridge
+
+
 def main(argv=None):
     import argparse
     from ..hal import SX1302
@@ -143,4 +171,9 @@ def main(argv=None):
     config = RuntimeConfig.load(args.config)
     logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO))
     runtime = build_runtime(config, SX1302())
-    runtime.run()
+    mqtt_bridge = start_mqtt_if_configured(runtime, config)
+    try:
+        runtime.run()
+    finally:
+        if mqtt_bridge is not None:
+            mqtt_bridge.stop()

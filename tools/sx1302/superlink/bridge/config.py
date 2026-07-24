@@ -12,6 +12,17 @@ ADOPT_ALL = object()  # sentinel: adopt any discovered device
 
 
 @dataclass
+class MqttConfig:
+    host: str
+    port: int = 1883
+    username: str | None = None
+    password: str | None = None
+    base_topic: str = "superlink"
+    discovery_prefix: str = "homeassistant"
+    tls: bool = False
+
+
+@dataclass
 class RuntimeConfig:
     gw_mac: bytes
     pairing_key: bytes = DEFAULT_PAIRING_KEY
@@ -22,6 +33,7 @@ class RuntimeConfig:
     invert_iq: bool = False
     log_level: str = "INFO"
     csv_path: str | None = None
+    mqtt: "MqttConfig | None" = None
 
     @classmethod
     def load(cls, path: str) -> "RuntimeConfig":
@@ -42,6 +54,22 @@ class RuntimeConfig:
             adopt = {bytes.fromhex(m) for m in raw_adopt}
 
         log = doc.get("log") or {}
+
+        mqtt_doc = doc.get("mqtt")
+        mqtt = None
+        if mqtt_doc is not None:
+            if "host" not in mqtt_doc:
+                raise ValueError("mqtt block requires 'host'")
+            mqtt = MqttConfig(
+                host=mqtt_doc["host"],
+                port=int(mqtt_doc.get("port", 1883)),
+                username=mqtt_doc.get("username"),
+                password=mqtt_doc.get("password"),
+                base_topic=mqtt_doc.get("base_topic", "superlink"),
+                discovery_prefix=mqtt_doc.get("discovery_prefix", "homeassistant"),
+                tls=bool(mqtt_doc.get("tls", False)),
+            )
+
         return cls(
             gw_mac=gw_mac,
             pairing_key=pairing_key,
@@ -52,6 +80,7 @@ class RuntimeConfig:
             invert_iq=bool(doc.get("invert_iq", False)),
             log_level=log.get("level", "INFO"),
             csv_path=log.get("csv"),
+            mqtt=mqtt,
         )
 
     def is_allowed(self, mac: bytes) -> bool:
