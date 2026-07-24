@@ -127,3 +127,20 @@ class BridgeRuntime:
                     pass
             if self._csv_file:
                 self._csv_file.close()
+
+
+def build_runtime(config: RuntimeConfig, hal, store=None) -> BridgeRuntime:
+    return BridgeRuntime(config, hal, store=store)
+
+
+def main(argv=None):
+    import argparse
+    from ..hal import SX1302
+    parser = argparse.ArgumentParser(description="SuperLink bridge runtime daemon")
+    parser.add_argument("--config", default="superlink_bridge.yaml",
+                        help="path to YAML config")
+    args = parser.parse_args(argv)
+    config = RuntimeConfig.load(args.config)
+    logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO))
+    runtime = build_runtime(config, SX1302())
+    runtime.run()

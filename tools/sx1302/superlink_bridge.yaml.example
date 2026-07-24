@@ -1,0 +1,12 @@
+# SuperLink bridge daemon config. Copy to superlink_bridge.yaml and edit.
+gw_mac: "010203040506"        # this bridge's 6-byte gateway MAC (hex)
+pairing_key: null             # null => Ubiquiti factory-default pairing key
+store_path: "superlink_devices.json"
+adopt:                        # sensor MACs this bridge owns; or the string: all
+  - "9041b22e9a53"
+downlink_delay_us: 1000000    # DL TX offset after the RX hardware timestamp (1 s)
+burst_spacing_us: 500000      # spacing between multiple DL frames in one response
+invert_iq: false
+log:
+  level: "INFO"
+  csv: null                   # optional path to append decoded events as CSV
