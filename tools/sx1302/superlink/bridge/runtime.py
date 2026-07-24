@@ -73,3 +73,57 @@ class BridgeRuntime:
                     event.value if event.decoded else "", event.raw.hex(),
                     event.unit or "", event.decoded])
                 self._csv_file.flush()
+
+    # --- append these methods to BridgeRuntime ---
+
+    def _schedule(self, frames, base_ts: int) -> None:
+        for i, f in enumerate(frames):
+            ts = base_ts + self.config.downlink_delay_us + i * self.config.burst_spacing_us
+            try:
+                self.hal.send(f.freq_hz, f.data, bandwidth=BW_500KHZ,
+                              tx_timestamp_us=ts, invert_pol=self.config.invert_iq)
+            except (ValueError, RuntimeError) as exc:
+                log.warning("TX skipped (%d bytes): %s", len(f.data), exc)
+
+    def poll_once(self, now: float) -> None:
+        for pkt in self.hal.receive():
+            if not pkt.crc_ok:
+                continue
+            frames = self.core.feed(pkt.payload, pkt.ul_channel, now)
+            self._schedule(frames, base_ts=pkt.timestamp_us)
+
+    def _maybe_tick(self, now: float) -> None:
+        # Housekeeping only (session timeouts). No RX packet to correlate, so any
+        # frames go out best-effort/immediate.
+        frames = self.core.tick(now)
+        for f in frames:
+            try:
+                self.hal.send(f.freq_hz, f.data, bandwidth=BW_500KHZ,
+                              tx_timestamp_us=0, invert_pol=self.config.invert_iq)
+            except (ValueError, RuntimeError) as exc:
+                log.warning("tick TX skipped: %s", exc)
+
+    def stop(self) -> None:
+        self._stop = True
+
+    def run(self) -> None:
+        if self.config.csv_path:
+            self._csv_file = open(self.config.csv_path, "a", newline="")
+            self._csv_writer = csv.writer(self._csv_file)
+        self.hal.start()
+        log.info("bridge runtime started (HAL %s)", self.hal.version())
+        try:
+            while not self._stop:
+                self.poll_once(time.monotonic())
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            log.info("shutting down")
+        finally:
+            self.hal.stop()
+            for mac, session in self._sessions.items():
+                try:
+                    self.store.save(session.to_record())
+                except Exception:  # best-effort final flush
+                    pass
+            if self._csv_file:
+                self._csv_file.close()

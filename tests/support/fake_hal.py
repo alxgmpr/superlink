@@ -16,6 +16,7 @@ class FakeHal:
         self.started = False
         self.stopped = False
         self._fail_idx = fail_on_send_index
+        self._send_calls = 0      # total send() invocations, including failures
 
     def start(self, *a, **k):
         self.started = True
@@ -32,7 +33,8 @@ class FakeHal:
 
     def send(self, freq_hz, payload, bandwidth=None, tx_timestamp_us=0,
              invert_pol=False):
-        idx = len(self.sent)
+        idx = self._send_calls
+        self._send_calls += 1
         if self._fail_idx is not None and idx == self._fail_idx:
             raise RuntimeError("simulated lgw_send failure")
         self.sent.append({"freq_hz": freq_hz, "payload": bytes(payload),
