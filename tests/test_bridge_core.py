@@ -16,6 +16,9 @@ class FakeSession:
         self.mac = record.mac
         self.state = "adopted"
         self.queued = []
+        self.started = False
+    def start(self, now):
+        self.started = True
     def feed(self, frame, channel, now):
         ev = PropertyEvent(mac=self.mac, property_id=3, name="BATTERY",
                            channel=0, raw=b"\x64", value=100, unit="%", decoded=True)

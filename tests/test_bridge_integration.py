@@ -26,10 +26,12 @@ from superlink.bridge.profiles import ProfileRegistry
 from superlink.bridge.session import DeviceSession
 from superlink.bridge.events import DeviceDiscovered
 from tests.fixtures.captured_frames import (
-    SENSOR_MAC, DEFAULT_PAIRING_KEY, DISCOVERY_FRAME_RAW,
+    SENSOR_MAC, DEFAULT_PAIRING_KEY, DISCOVERY_FRAME_RAW, CONN_CHALLENGE_RAW,
 )
 
-GW_MAC = bytes.fromhex("0102030405")
+# Gateway MAC is a 6-byte address (used verbatim in the 16-byte ChallengeRsp
+# inner: gw_mac(6) || sensor_mac(6) || u32(4)).
+GW_MAC = bytes.fromhex("010203040506")
 
 
 def _make_session(record):
@@ -65,3 +67,26 @@ def test_two_macs_no_crosstalk():
     assert isinstance(core._sessions[SENSOR_MAC], DeviceSession)
     assert core._sessions[SENSOR_MAC].mac == SENSOR_MAC
     assert core._sessions[bytes.fromhex("AABBCCDDEEFF")].mac == bytes.fromhex("AABBCCDDEEFF")
+
+
+def test_core_owned_session_reaches_handshake_and_emits_0x62():
+    """A core-owned (auto-adopted) DeviceSession must actually be *started* so
+    it enters BEACONING with a keypair, runs the DH/challenge handshake, and
+    transmits. Regression test for the 'start() gap': before the fix the
+    session sat in IDLE and _dispatch() emitted nothing, so no 0x62 ever left
+    the core. Here we drive a real DeviceSession end-to-end through the public
+    BridgeCore.feed() API and assert a 0x62 (ConnRsp / ChallengeRsp) is emitted.
+    """
+    core = _core(auto_adopt=True)
+    # Discovery: discover + auto-adopt + first feed to the started session.
+    disc_out = core.feed(DISCOVERY_FRAME_RAW, channel=1, now=1.0)
+    # The started BEACONING session answers the 0x40 discovery with a 0x62 ConnRsp.
+    assert any(f.data[1] == 0x62 for f in disc_out), (
+        "no 0x62 emitted on discovery — session was never started")
+    # ConnectionChallenge (0x42): DH completes, session reaches ACTIVE, and a
+    # 0x62 ChallengeRsp goes out.
+    chal_out = core.feed(CONN_CHALLENGE_RAW, channel=1, now=2.0)
+    assert any(f.data[1] == 0x62 for f in chal_out), (
+        "no 0x62 ChallengeRsp emitted on ConnectionChallenge")
+    # The session actually transitioned into the handshake (not still IDLE).
+    assert core._sessions[SENSOR_MAC].state in ("adopting", "active", "adopted")

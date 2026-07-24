@@ -22,6 +22,7 @@ class OutgoingFrame:
 class SessionProtocol(Protocol):
     mac: bytes
     state: str
+    def start(self, now: float) -> None: ...
     def feed(self, frame, channel: int, now: float): ...
     def tick(self, now: float): ...
     def queue_body(self, body: bytes) -> None: ...
@@ -36,6 +37,12 @@ class BridgeCore:
         self._factory = session_factory
         self.auto_adopt = auto_adopt
         self._sessions: dict[bytes, SessionProtocol] = {}
+        # MACs whose session has already been start()ed. Core-owned sessions are
+        # created IDLE (no keypair); they must be started — entering BEACONING
+        # and generating a keypair — before a frame is dispatched or they are
+        # ticked, or their state machine does nothing. Lazy-started on first
+        # feed/tick since `now` is not available at construction/submit time.
+        self._started: set[bytes] = set()
         self._discovered: dict[bytes, float] = {}
         self._subscribers: list[Callable[[Event], None]] = []
         for record in store.load_all():
@@ -49,6 +56,19 @@ class BridgeCore:
             for cb in self._subscribers:
                 cb(ev)
 
+    def _ensure_started(self, mac: bytes, session: SessionProtocol,
+                        now: float) -> None:
+        """Start a core-owned session exactly once (idempotent).
+
+        Freshly built / store-restored sessions are IDLE with no keypair;
+        start() moves them to BEACONING and generates the DH keypair. Guarded
+        by `_started` so a session is never started twice — its keys are never
+        regenerated and an already-ACTIVE/BEACONING session is never reset.
+        """
+        if mac not in self._started:
+            self._started.add(mac)
+            session.start(now)
+
     def feed(self, raw: bytes, channel: int, now: float) -> list[OutgoingFrame]:
         frame = parse_frame(raw)
         if frame is None:
@@ -56,6 +76,7 @@ class BridgeCore:
         mac = frame.mac
         session = self._sessions.get(mac)
         if session is not None:
+            self._ensure_started(mac, session, now)
             frames, events = session.feed(frame, channel, now)
             self._emit(events)
             return list(frames)
@@ -67,6 +88,7 @@ class BridgeCore:
         if self.auto_adopt:
             self._adopt(mac)
             session = self._sessions[mac]
+            self._ensure_started(mac, session, now)
             frames, events = session.feed(frame, channel, now)
             self._emit(events)
             return list(frames)
@@ -80,7 +102,8 @@ class BridgeCore:
 
     def tick(self, now: float) -> list[OutgoingFrame]:
         out: list[OutgoingFrame] = []
-        for session in self._sessions.values():
+        for mac, session in self._sessions.items():
+            self._ensure_started(mac, session, now)
             frames, events = session.tick(now)
             out.extend(frames)
             self._emit(events)
