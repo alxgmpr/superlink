@@ -1,0 +1,4 @@
+#!/usr/bin/env python3
+"""SuperLink bridge runtime daemon."""
+from superlink.bridge.runtime import main
+main()
