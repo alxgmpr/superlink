@@ -1,0 +1,46 @@
+# Property decode/encode profiles. name-only entries decode as raw
+# (decoded=false) until their wire type is confirmed. Multi-byte ints are
+# big-endian. See docs/protocol/superlink_application_layer.md.
+properties:
+  1:  { name: UPTIME,           type: u32, unit: s }
+  2:  { name: SIGNAL,           type: s16 }
+  3:  { name: BATTERY,          type: u8,  unit: "%", access: r }
+  4:  { name: LEAK_DETECTED,    type: bool }
+  5:  { name: LEAK_AUX_CONNECTED, type: bool }
+  6:  { name: LEAK_CONFIG }
+  7:  { name: TEMPERATURE,      type: s16, scale: 0.1, unit: "°C" }
+  8:  { name: TEMPERATURE_CONFIG }
+  9:  { name: HUMIDITY,         type: u16, scale: 0.1, unit: "%" }
+  10: { name: HUMIDITY_CONFIG }
+  11: { name: AMBIENT_LIGHT,    type: u16, unit: lux }
+  12: { name: AMBIENT_LIGHT_CONFIG }
+  13: { name: REPORT_INTERVAL,  type: u16, unit: s, access: rw }
+  14: { name: LED_ENABLED,      type: bool, access: rw }
+  15: { name: ENTRY_DETECTED,   type: bool }
+  16: { name: ENTRY_CONFIG }
+  17: { name: FIRMWARE_VERSION }
+  19: { name: BUTTON_PRESSED,   type: bool }
+  20: { name: TAMPER_DETECTED,  type: bool }
+  21: { name: TAMPER_CONFIG }
+  22: { name: TAMPER_CLEAR }
+  23: { name: MOTION_DETECTED,  type: bool }
+  24: { name: MOTION_CONFIG }
+  25: { name: ACCELERATION }
+  26: { name: ACCELERATION_CONFIG }
+  27: { name: SMOKE_STATUS,     type: u8 }
+  28: { name: SMOKE_ALARM_SILENCE }
+  29: { name: SMOKE_TROUBLE_SILENCE }
+  30: { name: SMOKE_TEST }
+  31: { name: SMOKE_REMOTE_STATUS }
+  32: { name: LED_FEEDBACK_CONFIG }
+  33: { name: GLASS_BREAK_DETECTED, type: bool }
+  34: { name: GLASS_BREAK_CLEAR }
+  35: { name: GLASS_BREAK_CONFIG }
+  36: { name: ALARM_SOUND_CONTROL,  access: rw }
+  37: { name: ALARM_SOUND_CONFIG }
+  38: { name: ALARM_LIGHT_CONTROL,  access: rw }
+  39: { name: ALARM_LIGHT_CONFIG }
+  40: { name: BUTTON_LONG_PRESSED,   type: bool }
+  41: { name: BUTTON_DOUBLE_PRESSED, type: bool }
+  42: { name: BUTTON_CONFIG }
+device_types: {}   # optional per-deviceType overrides, same entry shape

@@ -1,0 +1,16 @@
+// Attach to a RUNNING STM32WLE5 (SuperLink sensor) with NO reset, dump 64 KB SRAM.
+//
+// WHY no reset: a reset clears the live keystore to boot state AND halts the radio
+// task, killing the RF session. We must halt the running core IN PLACE.
+//
+// WHY this doesn't fall back to connect-under-reset: J-Link only resets on connect
+// when the normal connect can't reach the debug port (sleepy CPU). Keep the sensor
+// awake first (superlink-gw --keep-awake) so the SWD-AP stays live and a plain
+// connect succeeds. Using the generic `Cortex-M4` device (set on the cmdline, NOT
+// STM32WLE5JC) also avoids the ST connect-script's NRST pulse.
+//
+// DO NOT add `r` / ResetPin / connect-under-reset anywhere in this file.
+halt
+savebin /tmp/sensor_sram_live.bin 0x20000000 0x10000
+go
+exit

@@ -1,0 +1,19 @@
+// Attach (no reset) and read the Cortex-M4 fault status registers — the crash
+// oracle for RF write-fuzzing. These live in the System Control Space (readable
+// over SWD even under RDP1). Nonzero CFSR/HFSR = a fault fired; BFAR/MMFAR latch
+// the FAULTING ADDRESS, which for an OOB write tells us WHERE the write hit.
+//   CFSR  0xE000ED28  (MemManage/BusFault/UsageFault, sticky)
+//   HFSR  0xE000ED2C  (HardFault status)
+//   MMFAR 0xE000ED34  (MemManage fault address; valid iff CFSR.MMARVALID)
+//   BFAR  0xE000ED38  (BusFault address;  valid iff CFSR.BFARVALID)
+//   SHCSR 0xE000ED24  (which fault handlers are active/pending)
+// Do NOT reset (no `r`); a reset clears these regs and the live keystore.
+halt
+mem32 0xE000ED28,1
+mem32 0xE000ED2C,1
+mem32 0xE000ED34,1
+mem32 0xE000ED38,1
+mem32 0xE000ED24,1
+regs
+go
+exit

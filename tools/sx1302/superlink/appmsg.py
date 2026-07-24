@@ -99,6 +99,30 @@ def encode_property_request(property_ids, tag: int = 0) -> bytes:
     return bytes([MessageId.PROPERTY_REQUEST, tag & 0xFF]) + bytes(ids)
 
 
+def encode_property_set(entries, tag: int = 0) -> bytes:
+    """PROPERTY_SET body: [14, tag] + for each (id, channel, raw): id, channel, raw."""
+    out = bytearray([MessageId.PROPERTY_SET, tag & 0xFF])
+    for property_id, channel, raw in entries:
+        out += bytes([property_id & 0xFF, channel & 0xFF])
+        out += bytes(raw)
+    return bytes(out)
+
+
+def encode_reboot(tag: int = 0) -> bytes:
+    """REBOOT body: [6, tag]. Header only."""
+    return bytes([MessageId.REBOOT, tag & 0xFF])
+
+
+def encode_factory_reset(tag: int = 0) -> bytes:
+    """FACTORY_RESET body: [7, tag]. Header only."""
+    return bytes([MessageId.FACTORY_RESET, tag & 0xFF])
+
+
+def encode_locate(tag: int = 0) -> bytes:
+    """LOCATE body: [8, tag]. Header only."""
+    return bytes([MessageId.LOCATE, tag & 0xFF])
+
+
 # ---- decoders ----
 
 def decode_message(body: bytes, sizes: dict | None = None) -> dict:
