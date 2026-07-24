@@ -11,11 +11,13 @@ log:
   level: "INFO"
   csv: null                   # optional path to append decoded events as CSV
 
-# Optional: enable MQTT / Home Assistant. Omit this whole block to disable.
-mqtt:
-  host: "192.168.1.10"        # MQTT broker
-  port: 1883
-  username: null
-  password: null
-  base_topic: "superlink"     # state/command topic root
-  discovery_prefix: "homeassistant"   # HA MQTT Discovery prefix
+# Optional: MQTT / Home Assistant. DISABLED by default — uncomment this whole
+# block (and set `host`) to enable. With it commented out, the daemon runs with
+# no MQTT and no paho dependency.
+# mqtt:
+#   host: "192.168.1.10"       # MQTT broker (required to enable)
+#   port: 1883
+#   username: null
+#   password: null
+#   base_topic: "superlink"    # state/command topic root
+#   discovery_prefix: "homeassistant"   # HA MQTT Discovery prefix
