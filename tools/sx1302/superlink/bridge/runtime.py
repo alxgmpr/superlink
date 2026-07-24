@@ -148,6 +148,19 @@ def build_runtime(config: RuntimeConfig, hal, store=None) -> BridgeRuntime:
     return BridgeRuntime(config, hal, store=store)
 
 
+def start_mqtt_if_configured(runtime, config, client=None):
+    """Start the MQTT bridge if config.mqtt is set; return it (or None)."""
+    if config.mqtt is None:
+        return None
+    from .mqtt import MqttBridge
+    if client is None:
+        import paho.mqtt.client as mqtt
+        client = mqtt.Client()
+    bridge = MqttBridge(config.mqtt, runtime, client)
+    bridge.start()
+    return bridge
+
+
 def main(argv=None):
     import argparse
     from ..hal import SX1302
@@ -158,4 +171,9 @@ def main(argv=None):
     config = RuntimeConfig.load(args.config)
     logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO))
     runtime = build_runtime(config, SX1302())
-    runtime.run()
+    mqtt_bridge = start_mqtt_if_configured(runtime, config)
+    try:
+        runtime.run()
+    finally:
+        if mqtt_bridge is not None:
+            mqtt_bridge.stop()

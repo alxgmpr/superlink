@@ -10,3 +10,12 @@ invert_iq: false
 log:
   level: "INFO"
   csv: null                   # optional path to append decoded events as CSV
+
+# Optional: enable MQTT / Home Assistant. Omit this whole block to disable.
+mqtt:
+  host: "192.168.1.10"        # MQTT broker
+  port: 1883
+  username: null
+  password: null
+  base_topic: "superlink"     # state/command topic root
+  discovery_prefix: "homeassistant"   # HA MQTT Discovery prefix
