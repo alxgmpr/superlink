@@ -51,10 +51,15 @@ decrypted message surfaced as a typed event instead.
 3. **I/O boundary:** the core is a **pure engine** — no I/O, no threads. A
    runtime pumps it. Time is injected (`now: float` passed in) so beacon/timeout
    logic is deterministic and testable without hardware.
-4. **Device lifecycle:** the core owns the **full, multi-device** lifecycle —
-   pairing/adoption as an action, steady-state keepalive, per-device events.
-   Key/registry persistence goes through a storage **interface** the core
-   defines but does not implement.
+4. **Device lifecycle:** the core owns the **full, multi-device** lifecycle.
+   Pairing is **discovery-driven**: when a frame arrives from a device that is
+   not in the registry, the core emits a `DeviceDiscovered` event and does
+   nothing further until the consumer approves it with an `AdoptDevice(mac)`
+   action. This avoids silently adopting a stranger's sensor on a shared band. A
+   runtime-settable `auto_adopt` policy flag can short-circuit the approval for a
+   frictionless single-user setup. Steady-state keepalive and per-device events
+   follow adoption. Key/registry persistence goes through a storage **interface**
+   the core defines but does not implement.
 5. **Event/action semantics:** **layered**. The core always emits a faithful
    structured event and *also* decodes a typed value via a per-property /
    per-device-type profile table when the encoding is known; unknown encodings
@@ -118,26 +123,34 @@ subscribe(callback: Callable[[Event], None]) -> None
 `OutgoingFrame = {data: bytes, freq_hz: int, channel: int}` — mirrors today's
 `(tx_data, tx_freq_hz)` return so the runtime loop is a thin adapter.
 
-Pairing is an action (`BeginPairing`) that opens a join window; a joining sensor
-gets a new `DeviceSession`, and on commit its `DeviceRecord` is saved through the
-store.
+**Pairing is discovery-driven.** The core beacons so that factory-reset sensors
+can attempt to join. When `feed()` sees a frame whose MAC is not in the registry,
+the core emits `DeviceDiscovered(mac, …)` and holds the joiner in a pending
+state — no keys are derived, nothing is persisted. The consumer then either
+sends `AdoptDevice(mac)` (or the `auto_adopt` flag is set), at which point the
+core runs the DH/challenge/adoption handshake, creates the `DeviceSession`, and
+saves its `DeviceRecord` through the store on commit. A discovered device that is
+never adopted is dropped after a timeout.
 
 ### Events & actions (`events.py`, dataclasses)
 
 Events (core → consumer):
+- `DeviceDiscovered(mac, channel, first_seen)` — an unknown/unpaired device is
+  attempting to join; awaits `AdoptDevice` (or `auto_adopt`).
 - `PropertyEvent(mac, property_id, name, channel, raw, value, unit, decoded)`
 - `DeviceInfoEvent(mac, device_type, fw_version, hw_revision, anon_id,
   supported_message_ids, supported_properties)`
-- `DeviceStateEvent(mac, state)` where state ∈ `pairing | adopted | active | lost`
+- `DeviceStateEvent(mac, state)` where state ∈ `discovered | adopting | adopted |
+  active | lost`
 - `RawMessageEvent(mac, message_id, body)` — catch-all for messages without a
   higher-level mapping.
 
 Actions (consumer → core):
+- `AdoptDevice(mac)` — approve a discovered device; runs the adoption handshake.
 - `SetProperty(mac, name_or_id, value)` — encoded via the profile table.
 - `SetPropertyRaw(mac, property_id, channel, raw)` — escape hatch.
 - `RequestProperty(mac, ids)`, `RequestDeviceInfo(mac)`
 - `Locate(mac)`, `Reboot(mac)`, `FactoryReset(mac)`, `Ping(mac, data=b"")`
-- `BeginPairing(timeout)`
 
 ### `ProfileRegistry` + `superlink.yaml`
 
@@ -204,8 +217,11 @@ All tests drive the pure engine with injected time — no Pi required.
 - **Multi-device routing:** two MACs interleaved; assert no cross-talk and
   correct per-device session state.
 - **Store round-trip:** save → `load_all` → resume a session from a record.
-- **Pairing sequence:** replay captured adopt frames through `feed()`/`tick()`
-  and assert the state transitions and the persisted `DeviceRecord`.
+- **Discovery + adoption:** feed a frame from an unknown MAC; assert a
+  `DeviceDiscovered` event and that nothing is persisted until `AdoptDevice` is
+  submitted. Then replay captured adopt frames through `feed()`/`tick()` and
+  assert the state transitions and the persisted `DeviceRecord`. Cover the
+  `auto_adopt` path too.
 - **Regression:** the existing suite continues to pass after the extraction.
 
 ## Success criteria
