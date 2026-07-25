@@ -34,6 +34,22 @@ def _core(auto_adopt=False):
                       session_factory=FakeSession, auto_adopt=auto_adopt)
 
 
+def test_command_actions_use_nonzero_incrementing_tag():
+    """The sensor rejects tag-0 command bodies — a tag-0 FACTORY_RESET is
+    silently ignored (no 0x74 ACK, no reset; verified on hardware 2026-07-25).
+    BridgeCore must stamp each command with a non-zero, incrementing messageTag."""
+    from superlink.bridge.events import FactoryReset, Reboot
+    store = InMemoryDeviceStore()
+    store.save(DeviceRecord(mac=MAC, adopted=True))
+    core = BridgeCore(store, ProfileRegistry.load(), session_factory=FakeSession)
+    sess = core._sessions[MAC]
+    core.submit(FactoryReset(mac=MAC))
+    core.submit(Reboot(mac=MAC))
+    assert [b[0] for b in sess.queued] == [7, 6]        # FACTORY_RESET, REBOOT
+    assert all(b[1] != 0 for b in sess.queued)          # never tag 0
+    assert sess.queued[0][1] != sess.queued[1][1]       # incrementing
+
+
 def test_unknown_device_is_discovered_not_adopted():
     core = _core()
     seen = []
@@ -74,4 +90,6 @@ def test_submit_setproperty_queues_body_on_session():
     core.feed(UNKNOWN_FRAME, channel=1, now=1.0)
     core.submit(SetProperty(mac=MAC, name_or_id="LED_ENABLED", value=True))
     session = core._sessions[MAC]
-    assert session.queued and session.queued[0] == bytes([14, 0, 14, 0, 0x01])
+    # messageTag is now a non-zero running counter (tag 1 for the first command),
+    # not 0 — the sensor rejects tag-0 command bodies.
+    assert session.queued and session.queued[0] == bytes([14, 1, 14, 0, 0x01])
