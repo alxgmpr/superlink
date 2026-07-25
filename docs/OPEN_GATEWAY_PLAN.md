@@ -1,390 +1,178 @@
-# Open SuperLink Gateway — Plan to Full Pairing & Ownership
+# Open SuperLink Gateway — Status & Plan
 
-**Mission:** build an open-source gateway for Ubiquiti SuperLink sensors
-so the sensors can be used on any hardware, with open data, free of
-Ubiquiti's controller / cloud. Sensors out of the box should be able to
-pair with our gateway and report events to any consumer (MQTT, HTTP,
-Home Assistant, etc.).
+**Mission:** an open-source gateway for Ubiquiti SuperLink sensors so they
+can run on any hardware, with open data, free of Ubiquiti's controller and
+cloud. A factory-reset sensor should pair with our gateway out of the box and
+report its events to any consumer (MQTT, HTTP, Home Assistant, …).
 
-This document tracks what's solved, what's blocking, and the shortest
-path to full interoperability.
-
----
-
-## Major architecture discovery (2026-04-21)
-
-The Ubiquiti bridge is **not a standalone gateway** — it is a
-**stateless LoRa↔JSON-RPC relay** that depends on a UniFi controller
-for all pairing intelligence.
-
-```
-sensor  ←─LoRa──→  bridge  ←──WebSocket JSON-RPC──→  UniFi controller
-                                ws://10.1.1.1:41522
-```
-
-Confirmed by hooking `send`/`recv` on the bridge and catching the
-WebSocket handshake + JSON traffic live during a pair:
-
-- Bridge connects to the controller at `ws://10.1.1.1:41522` using
-  mutual-TLS-style auth (`/etc/persistent/lorabr.{cert,key}`).
-- JSON-RPC envelope pattern: `{"id": <uuid>, "name":"<event>",
-  "type":"event"|"response", "timestamp":<epoch_ms>, ...}`.
-- Controller holds **all per-sensor secrets** (the `keypair+0x30`
-  context, outer keys, device identity). Sent to the bridge lazily
-  during pairing via JSON-RPC requests.
-- Bridge forwards sensor 0x54 uplinks to the controller as JSON events
-  (`messageReceived` with hex-encoded `"data"` field).
-- Bridge receives `devsInfoChanged` / `discoveryResult` events from
-  controller carrying adoption state, `networkId`, `ssid`, MAC, etc.
-
-**The 70-byte Class B grant in the 0x74 DL reply to the sensor's 0x43
-is computed locally by the bridge from session state**, but the entire
-framework of "what session is this / which sensor / what keys"
-originates from the controller. Reproducing the grant without the
-controller-provided state is possible in principle but fighting
-upstream.
-
-**Consequence for the open-gateway goal:** the cleanest path is to
-*replace the controller*, not reverse-engineer every bridge-local
-decision. A mock UniFi controller that the real bridge speaks to
-(short-term) — or eventually, a full open replacement for both bridge
-and controller (long-term) — is the actual deliverable.
-
-Full WebSocket API findings in
-[`docs/protocol/controller_websocket_api.md`](protocol/controller_websocket_api.md).
+This document tracks what's solved, what's next, and keeps the reverse-
+engineering history as reference. It was substantially rewritten on
+**2026-07-24** after the project outgrew the original mock-controller plan.
 
 ---
 
-## Current state
+## Where we are (2026-07-24) — TL;DR
 
-### Solved (protocol layer)
+**We replaced the entire Ubiquiti stack.** A standalone gateway on open
+hardware (Raspberry Pi + SX1302 concentrator) pairs SuperLink sensors
+**directly** — no Ubiquiti bridge, no UniFi controller, no cloud:
+
+```
+sensor  ←─LoRa──→  superlink-gw  (Pi + SX1302)  ──→  MQTT / Home Assistant / …
+```
+
+The full device lifecycle works end-to-end against a real motion sensor:
+
+- **discover → pair → adopt → operational telemetry** (Curve25519 DH →
+  BLAKE2b session-key KDF → XSalsa20-Poly1305 frames; ADOPT_REQUEST/RESPONSE
+  key rotation; decrypted `ext_report` battery/temperature).
+- **reconnect** — rejoin an already-adopted sensor from persisted addDevice
+  keys, no re-pair needed (`superlink-gw --reconnect`).
+- **over-the-air factory reset** — the gateway can unpair a sensor by sending
+  a `FACTORY_RESET` in its 0x53 command window (no physical access needed).
+- **v1 and v2 sensor firmware** — see the v2 section below.
+
+Two things that used to look like hard blockers are resolved:
+
+- The controller-provisioned **per-device `keypair+0x30` secret** turned out
+  to be a **global default** (`c5923a86…`), accepted by any factory-reset
+  sensor. Not per-device, not a blocker. (See "The adoption key" below.)
+- We do **not** need to reverse-engineer every bridge-local decision or run a
+  mock UniFi controller — the standalone gateway owns the whole flow.
+
+**The current frontier is productization, not protocol.** The open bridge
+stack (BridgeCore engine + `superlink-bridged` runtime daemon + MQTT/Home
+Assistant adapter, PRs #5–#8) is code-complete and unit-tested, but has
+**not yet run on the Pi** — the hardware still runs the older single-file
+`gateway.py` monolith that all the live pairing was proven on.
+
+---
+
+## What's solved
+
+### Protocol layer
 
 1. **LoRa PHY** — SF5, 125 kHz UL / 500 kHz DL, CR 4/5, sync 0x1424,
-   explicit header. 8 UL + 8 DL paired channels, 915.6–924.6 MHz, plus
-   beacon channel 927.6 MHz.
+   explicit header. 8 UL + 8 DL paired channels, 915.6–924.6 MHz, beacon on
+   927.6 MHz.
 2. **Frame format** — 10-byte cleartext header (mctrl + dctrl + 6B MAC +
-   seq_hi + seq_lo) + 4-byte BLAKE2b-truncated MIC + XSalsa20-encrypted
-   body. 24-byte nonce is `header(10B) || zeros(13B) || counter(1B)`.
-3. **Outer pairing key** — hardcoded Ubi default
-   `47be3dffb41ea357…045c2dbe` works for all initial handshake frames
-   (0x40 / 0x62 / 0x42) against a factory-reset sensor.
-4. **Session-key KDF** —
-   `blake2b-32(shared_secret || gw_pub || sensor_pub || keypair+0x30)`.
-   All four inputs confirmed via keyhook capture at the exact gh_init
-   → 4×gh_update(32B) → gh_final sequence.
-5. **ChallengeRsp inner plaintext** —
-   `gw_mac(6B) || sensor_mac(6B) || u32(4B)`. The u32 is recovered from
-   a 10-byte XSalsa20-encrypted blob at `0x42 payload[35:45]`
-   (session_key, zero nonce).
-6. **Post-ACTIVE management sequence counter** — position 1 of each
-   reply body increments by 1 per DL management frame:
-   - `0x53` reply → `09 NN`
-   - `0x44` reply → `0b (NN+1) 11 01 0d 14`
-   - `0x43` reply → `02 (NN+2) <64B structured> 00 00 04 8f`
-   NN is session-specific. The sensor's 0x44 UL body starts with
-   `0a NN` — the sensor echoes the DL-counter it expects.
-7. **`networkId = 1167 = 0x048F`** is the UniFi network identifier,
-   embedded as the stable trailer `00 00 04 8f` in every 70B grant.
-   Comes from the controller in `discoveryResult` /
-   `devsInfoChanged` events.
-8. **Tooling**
-   - Standalone gateway emulator on Raspberry Pi + SX1302
-     ([`tools/sx1302/superlink/gateway.py`](../tools/sx1302/superlink/gateway.py)).
-   - LD_PRELOAD libsodium hook
-     ([`tools/keyhook/keyhook.c`](../tools/keyhook/keyhook.c)) —
-     captures BLAKE2b state, XSalsa20 IO, Curve25519 scalarmult,
-     `randombytes_buf`, `memcpy`/`memmove`/`memset`, `send`/`recv`
-     (WebSocket), plus manual ARM stack walker for caller identification.
-   - Bundled gdbserver for ARMv7l embedded target at
-     `tools/keyhook/gdbserver-armhf` + libs needed at runtime.
-   - Heltec V3 passive sniffer
-     ([`tools/sniffer/`](../tools/sniffer/)).
-   - Capture artifacts under
-     [`captures/live/`](../captures/live/).
+   seq_hi + seq_lo) + 4-byte BLAKE2b-truncated MIC + XSalsa20-encrypted body.
+   24-byte nonce = `header(10B) || zeros(13B) || counter(1B)`.
+3. **Outer pairing key** — hardcoded Ubi default `47be3dff…045c2dbe`
+   encrypts the initial handshake frames (0x40 / 0x62 / 0x42) against a
+   factory-reset sensor.
+4. **Session-key KDF** — `blake2b32(shared || gw_pub || sensor_pub ||
+   context)`, all four inputs confirmed via keyhook capture. The `context`
+   (keypair+0x30) is the adoption key for initial pairing (see below) and the
+   rotated `addDevice.key` after commit.
+5. **ChallengeRsp inner plaintext** — `gw_mac(6B) || sensor_mac(6B) ||
+   u32(4B)`. The u32 is recovered from a 10-byte XSalsa20 blob at `0x42
+   payload[35:45]` (session_key, zero nonce). The inner sensor_mac doubling
+   as a decrypt oracle is what let us solve the v2 KDF (below).
+6. **Adoption** — `ADOPT_REQUEST` (0x02, 70B: `messageId || tag ||
+   gatewayPub || gatewayFallbackPub || networkId`) and the sensor's plaintext
+   `ADOPT_RESPONSE` (0x03, 66B: two fresh device ephemeral pubkeys). Both
+   sides derive persistent `(addDevice.key, addDevice.fallbackKey)` via the
+   persistent-key KDF `E` below. `networkId = 0x048F` (1167).
+7. **Persistent-key KDF `E`** (from UniFi Protect `deviceAdopt.ts`):
+   ```
+   H = 70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59  (baked-in salt)
+   E(my_priv, their_pub) = blake2b32( X25519(my_priv, their_pub)
+                                     || base*my_priv || their_pub || H )
+   addDevice.key         = E(r, devicePublicKey)
+   addDevice.fallbackKey = E(o, deviceFallbackPublicKey)
+   ```
+8. **Post-commit reconnect** — the adopted sensor re-emits adopted-form
+   discovery (`02ae94 NN 0000048f …`) and re-handshakes using the
+   `addDevice.key` as session-KDF context and `fallbackKey` as the outer
+   transport key.
 
-### Solved (architecture layer)
+### Pairing + adoption run end-to-end (standalone gateway)
 
-- Bridge ↔ controller uses deflate-compressed WebSocket, JSON-RPC
-  envelopes with one-byte type prefix:
-  - `r` = response (to a bridge request)
-  - `o` = oneway/event (controller push)
-- Bridge requests specific per-sensor data from controller (e.g. the
-  `"key"` field — the `keypair+0x30` context) via named methods.
-- Bridge emits per-sensor events upstream (sensor data, discovery,
-  state changes).
+The Pi gateway (`tools/sx1302/superlink/gateway.py`, driven by `superlink-gw`)
+takes a factory-reset sensor all the way to an operational session and holds
+it: discovery → 0x62 ConnRsp → 0x42 ConnChallenge → session key → 0x62
+ChallengeRsp → 0x53 → ADOPT_REQUEST → ADOPT_RESPONSE → 0x63 commit-ack →
+*COMMIT OBSERVED* → key rotation → sustained decrypted `0x54 ext_report`
+telemetry. Reconnect and remote factory-reset both verified live.
 
-### Solved (2026-04-30 evening)
+### The adoption key is a global default (per-device-secret problem resolved)
 
-**The 70-byte body is `ADOPT_REQUEST`, not a grant.** Recovered
-from static RE of UniFi Protect (UNVR firmware v5.0.16) — see
-[`docs/protocol/superlink_application_layer.md`](protocol/superlink_application_layer.md)
-for the corrected wire-level protocol. There is no inner
-encryption: the 64 middle bytes are two raw X25519 pubkeys
-(`gatewayPublicKey || gatewayFallbackPublicKey`), the trailing 4 B
-is networkId BE, and the leading two bytes are
-`messageId=0x02 || messageTag`. The sensor's 66-byte 0x03 reply is
-plaintext `ADOPT_RESPONSE` carrying the sensor's two fresh
-ephemeral pubkeys.
+The value `c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db`
+— originally observed as the controller-pushed `"key"` field and assumed to
+be a per-device secret — is the **global `LORA_DEVICE_DEFAULT_ADOPTION_KEY`**.
+A factory-reset sensor accepts it as the initial-pairing session-KDF context
+with no controller provisioning. This is what makes an open, controller-free
+gateway viable for arbitrary sensors (pending confirmation on a second
+physical unit — see What's next).
 
-The "encrypted Class B grant" framing was a multi-week blind alley
-caused by mis-reading the MSB[31]-clear pattern: we assumed
-`[eph_pub LE] || [Poly1305 MAC + ct]`; the real structure is
-`[gatewayPub LE] || [gatewayFallbackPub LE]` — both halves are
-Curve25519 u-coords, both naturally MSB-clear, no ciphertext to
-decrypt.
+### v2 sensor firmware support (PR #8, 2026-07-24)
 
-**Persistent-key KDF**, recovered from
-`./src/middleware/devices/loraBridges/subscribers/deviceAdopt.ts`
-in the Protect bundle:
+The bench sensor's firmware was upgraded to a v2 protocol (via OTA
+push/revert cycling) that changed two things, both now handled:
 
-```
-H = 70be68514ce7b81328d9f3215855c5675336ea88a08a728df7fce95cc8970a59  (32 B salt baked into Protect)
+| | v1 | v2 |
+|---|---|---|
+| Discovery ad | `01 ae94 NN 00000000` (8B) | `02 ae94 NN 00000000 0002` (10B) |
+| Initial-pairing session-KDF context | `pairing_key` (`47be3dff…`) | adoption key (`c5923a86…`) |
 
-E(my_priv, their_pub) = blake2b32( X25519(my_priv, their_pub)
-                                   || base × my_priv
-                                   || their_pub
-                                   || H )
+The gateway now gates discovery on the stable `ae94` marker (accepts either
+version) and selects the session-KDF context by the discovery version byte,
+so a plain `superlink-gw --mac …` pairs both firmwares with no flags.
+Hardware-verified including a full factory-reset → fresh no-flag re-pair.
+Details in memory `v2_firmware_pairing`.
 
-After ADOPT_REQUEST/RESPONSE round trip (controller eph privs r, o):
-  addDevice.key         = E(r, devicePublicKey)
-  addDevice.fallbackKey = E(o, deviceFallbackPublicKey)
-```
+### Tooling
 
-The sensor runs the inverse with its own fresh ephemeral privates;
-both sides hold matching keys after the exchange. Each subsequent
-re-pair runs another ADOPT_REQUEST/RESPONSE cycle and rotates these
-values. In the Y3 trace this is the post-grant
-`removeDevice` + `addDevice {key=aed56bd5…, fallbackKey=a42b0887…}`
-step we already observed but didn't realise was the rotation product.
-
-**Why replay-grant failed at the sensor layer.** The mock replayed a
-captured `ADOPT_REQUEST` (containing stale `gatewayPublicKey`s) and
-then replayed the captured rotated `addDevice` values. The sensor
-*did* generate fresh response pubkeys to our request (so 0x03 ACK
-fired and the bridge flipped `adopted=true`), but the rotation
-values our mock then sent to the bridge were derived from a
-*different* session's ephemerals than the sensor's actual
-just-emitted response. The sensor's persistent state diverged from
-the controller's, so it refused operational mode (red LED, no
-0x0c telemetry).
-
-#### Y5 implementation requirements
-
-Trivial follow-on. In `tools/mock_controller/server.py`:
-
-1. Generate fresh `r`, `o` privates per pair attempt.
-2. Build `ADOPT_REQUEST` body as
-   `[0x02, NN, base*r (32 B), base*o (32 B), networkId BE (4 B)]`
-   = 70 B.
-3. Replace the hardcoded `TEST_SENSOR.grant_data` with this dynamic
-   build.
-4. On the 66-byte `messageReceived` (sensor `ADOPT_RESPONSE`), parse
-   `devicePublicKey = bytes[2:34]`, `deviceFallbackPublicKey =
-   bytes[34:66]`.
-5. Compute `m = E(r, devicePublicKey)`,
-   `h_alt = E(o, deviceFallbackPublicKey)`.
-6. Send rotated `addDevice {key: m, fallbackKey: h_alt}` (replacing
-   the captured stale values).
-
-Estimate: ~50 lines.
-
-#### Status of the offline-crack negative
-
-The earlier ~180 k key×nonce×cipher offline crack was destined to
-fail — not because the algorithm was hard, but because there was no
-ciphertext. The crack scripts at `tools/grant_crack/` are kept as a
-record of the negative result; see
-[`docs/protocol/controller_y4_results.md`](protocol/controller_y4_results.md)
-"Phase Y5 step 1" for the full coverage.
+- **Standalone gateway** — `tools/sx1302/superlink/` (HAL, decoder, crypto,
+  gateway state machine, CLI). Entry points `superlink-gw` (pairing),
+  `superlink-sniff` (passive), `superlink-bridged` (runtime daemon). Runs on
+  the Pi at `alex@sx1302.local`; deploy with `tools/sx1302/deploy.sh`.
+- **Open bridge stack** — `tools/sx1302/superlink/bridge/`: `BridgeCore`
+  (multi-device registry + persistence), profile registry, event/action
+  surface, MQTT/Home-Assistant adapter, YAML config. Code-complete, unit-
+  tested, **not yet hardware-run**.
+- **LD_PRELOAD keyhook** — `tools/keyhook/keyhook.c`: captures BLAKE2b state,
+  XSalsa20 I/O, Curve25519 scalarmult, and (on the real bridge) SSL_read/
+  write WebSocket JSON. How the session-KDF inputs were confirmed.
+- **Heltec V3 passive sniffer** — `tools/sniffer/`.
+- **Capture artifacts** — `captures/live/`.
 
 ---
 
-## The per-device secret problem (still real)
+## What's next (prioritized)
 
-Even after pairing works, the per-device `keypair+0x30` context is
-controller-provisioned. We've confirmed this: the value
-`c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db` is
-constant across pair4/5/6 of the same sensor, but arrives from the
-controller in JSON (`"key":"..."` field response) each time the bridge
-restarts. It's not baked into sensor firmware — it's in the
-controller's device DB.
+### 1. Run the refactored bridge stack on hardware — the current frontier
 
-For a fully open gateway, we need either:
-- Universal factory default that every factory-reset sensor accepts
-  (we can only know by pairing a second, different sensor).
-- Derivation from sensor identity (MAC + a master secret we can
-  extract from somewhere).
-- **Our own controller** that provisions whatever we want.
+`superlink-bridged` (BridgeCore + runtime + MQTT) has never paired a sensor
+on the Pi; the monolith is what all live pairing used. Bring the refactored
+stack up on hardware and reproduce a full pair + adopt + telemetry through
+it. **Gate:** first resolve the 2 red `test_gateway.py` ConnChallenge tests
+(the `[3:35]` vs `[13:45]` pubkey-offset baseline, memory
+`connchallenge_offset_open`) — don't trust the refactored path on hardware
+while those fail. Fold the monolith's v2 fixes (already mirrored into
+`bridge/session.py`) into the stack of record so the two stop diverging.
 
----
+### 2. End-to-end Home Assistant demo — the mission headline
 
-## Plan pivot — Option Y: mock UniFi controller
+Point the MQTT adapter at a real broker + HA instance and get the motion
+sensor to appear in Home Assistant reporting battery / temperature / motion,
+with zero Ubiquiti software in the loop. This is the deliverable that proves
+the mission; it's within reach once #1 is on hardware.
 
-Instead of chasing every bridge-local decision, stand up a **minimal
-mock controller** that satisfies the real bridge's JSON-RPC
-expectations. This flips the problem:
+### 3. Pair a second, different sensor — confirm universality
 
-- We control what `"key"`, `"secret"`, `"networkId"`, etc. values the
-  bridge sees.
-- We observe what JSON-RPC *methods* the bridge calls (the full list
-  of what it needs from a controller).
-- We learn the exact JSON schema for the Class B grant path if it
-  turns out the bridge ever asks the controller for one.
-- Once the mock controller is rich enough to drive a complete pair, we
-  can either (a) keep the bridge binary and run our own controller, or
-  (b) reimplement the bridge too for a fully open stack.
+Every live pair so far has been one physical unit (`90:41:B2:2E:9A:53`).
+Pairing a second sensor confirms the pairing key, adoption key, and KDF are
+truly universal rather than a quirk of this device — the last open question
+behind "works on arbitrary factory sensor."
 
-This is also the **architecturally correct deliverable** for the
-open-gateway mission: sensors need a paired bridge + controller combo,
-and the controller is the part more amenable to open-source
-replacement.
+### 4. OTA firmware decrypt key (separate long-term track)
 
-### Phase Y1 — WebSocket server handshake (hours)
-
-Implement a Python `websockets`-based server:
-- Listens on `0.0.0.0:41522`.
-- Accepts `permessage-deflate` extension.
-- Speaks the JSON-RPC envelope format (`r` / `o` prefix bytes,
-  message framing).
-- Doesn't need mTLS if we can point the bridge at an unencrypted
-  endpoint. If mTLS is required (likely), use the bridge's existing
-  cert/key or a self-signed pair the bridge trusts.
-
-### Phase Y2 — Redirect bridge to the mock (hours)
-
-Three viable methods:
-- **DNS override**: point the bridge's controller hostname at our
-  mock. Requires finding the hostname in the bridge's config.
-- **IP takeover**: run the mock on `10.1.1.1:41522` (the real
-  controller's endpoint) by isolating the bridge on a separate network
-  segment.
-- **Binary patch**: modify the hardcoded endpoint in lorabrd (last
-  resort — fragile).
-
-Most direct: move the bridge to an isolated LAN with a mock running at
-the expected controller IP.
-
-### Phase Y3 — Replay controller responses from captured JSON (1 day)
-
-Use the pair6/pair7 captures as a starting script. Respond to each
-JSON-RPC method with a canned reply that matches what the real
-controller sent. The bridge should walk through the adoption flow.
-
-At each point where the bridge blocks waiting for a controller reply
-we haven't recorded, extend the mock.
-
-### Phase Y4 — Drive an adoption end-to-end (1 day)
-
-With canned replies in place, have the mock answer `devsInfoChanged`
-events, provisioning `key`/`secret`/`networkId`/etc. values. If the
-bridge then successfully pairs a sensor, we have:
-
-- A deterministic pair reproducible without UniFi's cloud.
-- Ground truth for every JSON field required.
-- A way to inject *our own* values (including crafted `key` contexts)
-  and observe how the bridge/sensor react.
-
-### Phase Y5 — solved via UniFi Protect static RE (2026-04-30)
-
-**Background.** Phase 2 retry-4 walked the captured Y3 script
-end-to-end. Bridge flipped `adopted=true`, but the sensor stayed at
-red LED with zero `0x0c` telemetry across multiple reed-switch events.
-We diagnosed this as the captured grant body not being replayable.
-See [`docs/protocol/controller_y4_results.md`](protocol/controller_y4_results.md)
-for the original diagnostic.
-
-**Step 1 — offline crack (negative).** Spent ~180 k key×nonce×cipher
-attempts treating `addDevice.key` as a PSK or DH foothold against the
-hypothesised `[eph_pub] || [MAC + ct]` structure. Zero hits. Coverage
-detailed in
-[`controller_y4_results.md`](protocol/controller_y4_results.md)
-"Phase Y5 step 1". Crack scripts kept at `tools/grant_crack/`.
-
-**Step 2 — UniFi Protect static RE (solved).** The right bundle was
-**Protect**, not Network — self-hosted UniFi Network doesn't include
-the SuperLink controller code. Path:
-
-1. Pulled UNVR firmware v5.0.16 from the open Ubiquiti API
-   (`https://fw-update.ubnt.com/api/firmware?filter=eq~~platform~~UNVR&filter=eq~~channel~~release&sort=-version`);
-   stored at `firmware/dumps/UNVR-5.0.16-9d351dce.bin`. UNVR is a
-   Protect-only appliance — minimum surrounding code.
-2. Extracted the rootfs squashfs at offset `0xE88D45` to
-   `firmware/analysis/unvr-5.0.16/ulp-fs/` (targeted extract avoiding
-   a macOS case-collision in perl tree).
-3. Located the Protect server bundle
-   `usr/share/unifi-protect/app/service.js` (5.1 MB single-line
-   webpack output). Source map listed
-   `./src/middleware/devices/loraBridges/...` modules.
-4. Decoded webpack module **41118**
-   (`messages.ts`) — full `MessageId` enum + per-message
-   encode/decode. The 70-byte body is plaintext `ADOPT_REQUEST` (id
-   `0x02`); the 66-byte sensor reply is plaintext `ADOPT_RESPONSE`
-   (id `0x03`). Both halves of the 64B middle are X25519 pubkeys —
-   no encryption.
-5. Decoded the persistent-key KDF in
-   `subscribers/deviceAdopt.ts`. Formula recorded in
-   [`docs/protocol/superlink_application_layer.md`](protocol/superlink_application_layer.md).
-
-**Why replay was insufficient (corrected understanding).** The
-exchange is a two-way Curve25519 ratchet: the controller sends fresh
-ephemeral pubkeys, the sensor responds with its own fresh ephemeral
-pubkeys, and both sides derive new persistent
-`(addDevice.key, fallbackKey)` from the four pubkeys + a baked-in
-salt `H`. Our mock replayed stale request pubkeys *and* stale
-rotation values from the captured Y3 trace. The sensor responded
-with fresh pubkeys (so 0x03 ACK fired), but our subsequent rotation
-values weren't derived from those — sensor and controller persistent
-state diverged.
-
-**Implementation work.** Trivial follow-on, no cryptanalysis:
-
-1. Generate fresh `r`, `o` privates per pair attempt; encode
-   `ADOPT_REQUEST` per
-   [`superlink_application_layer.md`](protocol/superlink_application_layer.md).
-2. Replace hardcoded `TEST_SENSOR.grant_data` in
-   `tools/mock_controller/server.py` with a function building a
-   fresh ADOPT_REQUEST.
-3. On the sensor's 66-byte ADOPT_RESPONSE, parse `devicePublicKey`,
-   `deviceFallbackPublicKey`.
-4. Compute `m = E(r, devicePublicKey)`,
-   `h_alt = E(o, deviceFallbackPublicKey)` (where `E` is the
-   blake2b32 KDF in
-   [`superlink_application_layer.md`](protocol/superlink_application_layer.md)).
-5. Send rotated `addDevice {key: m, fallbackKey: h_alt}`.
-
-Estimated ~50 lines of Python. Verifiable against the 8 captured
-"grants" by checking that `gatewayPublicKey || gatewayFallbackPublicKey
-|| networkId` round-trips through `encodeMessage`.
-
-### Phase Y6 — Replace the bridge (optional, long term)
-
-Once the mock is rich enough that we understand the full JSON-RPC
-protocol both directions, we can write an open-source *bridge*
-(handling LoRa ↔ controller) that works with the mock. That's the
-final open stack: open sensor firmware (future), open bridge, open
-controller.
-
----
-
-## Retained as reference — Option X (static RE, parked)
-
-Fully decompile `sub_52e78` and trace every field that lands in the
-70B grant. This was the original plan and is still viable, but it's a
-much larger time commitment and produces a per-sensor-specific
-patched emulator rather than a scalable open gateway. Revisit only if
-Y stalls.
-
-Retained notes:
-- `sub_52e78` is the `0x43` inner-type-3 handler, strings
-  "SwitchClassBRsp" / "Switch to [ClassName]".
-- Timing accessors: `sub_577a6`, `sub_576fc` (returns `arg+0xc` =
-  beacon period), `sub_56d0e` (returns `arg+0x40` = timing context),
-  `sub_577d4` (next beacon slot index), `sub_51036` (connection queue
-  capacity flag).
-- Body assembly: `sub_567bc` wraps the body, calls `sub_55eb6` for
-  MIC+outer-encrypt. `sub_3bff8` is the XSalsa20 wrapper
-  (`→ sub_2f682 = crypto_stream_xor`).
-- ChallengeRsp path is `sub_52090` (fully understood).
+Extract the per-product `.ota` decryption key from the STM32WLE5 sensor via
+EMFI RDP1→RDP0 downgrade. Software paths are exhausted; this is a hardware RE
+effort. See `docs/emfi_rdp_downgrade_plan.md` and memory
+`ota_format_and_emfi_plan`. Not on the gateway critical path.
 
 ---
 
@@ -392,75 +180,66 @@ Retained notes:
 
 | Item | Status |
 |------|--------|
-| LoRa PHY | ✅ |
-| Frame format + MIC | ✅ |
-| Outer encryption | ✅ factory default |
-| DH + session-key KDF | ✅ all 4 inputs confirmed |
+| LoRa PHY / frame format / MIC | ✅ |
+| Outer encryption (factory default) | ✅ |
+| DH + session-key KDF (all 4 inputs) | ✅ |
 | ChallengeRsp layout | ✅ |
-| Post-ACTIVE handshake replies | ✅ counter logic understood |
-| `networkId = 0x048F` in 0x43 trailer | ✅ |
-| Controller JSON-RPC API discovered | ✅ partial schema captured |
-| 70 B body decoded | ✅ plaintext `ADOPT_REQUEST` (not a grant) — see `superlink_application_layer.md` |
-| Sensor reaches paired state | 🟡 unblocked — implementation pending in `mock_controller/server.py` |
-| Works on arbitrary factory sensor | 🟡 unblocked — same implementation generalises |
-| Mock UniFi controller handshake | ✅ Phase Y1-Y2 done |
-| Plaintext capture of bridge↔controller JSON-RPC | ✅ Phase Y3 done — full method vocabulary + 70B grant + KDF inputs all captured |
-| Drive end-to-end pair via mock (bridge side) | ✅ Phase Y4 done — `adopted=true` + `networkId=1167` |
-| Drive end-to-end pair via mock (sensor side) | ❌ Phase 2 retry-4 (2026-04-30): replay grant insufficient, sensor stays red |
-| 64B middle algorithm | ✅ recovered from UniFi Protect bundle (UNVR fw v5.0.16); not encryption — two raw X25519 pubkeys (`gatewayPublicKey \|\| gatewayFallbackPublicKey`); persistent-key KDF `E(my_priv, their_pub) = blake2b32(shared \|\| my_pub \|\| their_pub \|\| H)` with `H` constant pulled from the bundle |
+| ADOPT_REQUEST/RESPONSE + persistent-key KDF | ✅ recovered from Protect bundle |
+| Sensor reaches paired/adopted state | ✅ standalone gateway, end-to-end |
+| Operational telemetry decrypt (0x54 ext_report) | ✅ battery + temperature |
+| Reconnect to adopted sensor | ✅ `--reconnect` |
+| Over-the-air factory reset | ✅ `--factory-reset` hook |
+| Per-device secret / adoption key | ✅ global default `c5923a86…` |
+| v1 + v2 firmware pairing | ✅ PR #8 |
+| Works on arbitrary factory sensor | 🟡 proven on 1 unit; needs a 2nd |
+| Refactored bridge stack on hardware | ❌ never run on the Pi |
+| 2 ConnChallenge unit tests | ❌ red baseline |
+| End-to-end Home Assistant | ❌ not yet demonstrated |
+| OTA firmware decrypt key | ❌ EMFI track, separate |
 
-**Phase Y1-Y2 results (2026-04-21):** Mock controller at
-[`tools/mock_controller/server.py`](../tools/mock_controller/server.py)
-successfully handshakes with the real bridge. Requirements discovered:
-bridge is the WSS server on `:8571`, requires mTLS with any
-CN=localhost client cert (bridge's own `lorabr.cert/key` works),
-`Sec-WebSocket-Protocol: ucp4`. `X-Mode: 0` header is *optional* —
-the real controller doesn't send it; mock works either way.
+---
 
-**Phase Y3 results (2026-04-29):** plaintext JSON-RPC captured by
-LD_PRELOAD-hooking `SSL_read`/`SSL_write` on the bridge (see
-[`tools/keyhook/keyhook.c`](../tools/keyhook/keyhook.c)). Decoder at
-[`tools/keyhook/ssl_decode.py`](../tools/keyhook/ssl_decode.py).
-Findings written up in
-[`docs/protocol/controller_y3_findings.md`](protocol/controller_y3_findings.md).
-Headlines:
-- The **70-byte Class B grant is computed by the controller** and
-  pushed to the bridge as a `sendMessage.data` field. Bridge is a
-  pure relay — no local generation. The "grant" we'd been hunting on
-  the bridge with memset/memcpy hooks lives in the UniFi Network app.
-- **Session-key KDF input #4 = `addDevice.key`** — empirically
-  confirmed against `gh_update` traces. Per-sensor persistent secret
-  for our test sensor is `c5923a86…d7bd38db`.
-- Real method vocabulary: `bridgeInfoGet`, `keyExchange`, `authorize`,
-  `discoveryStart`, `addDevice`, `removeDevice`, `sendMessage` (+ events
-  `discoveryResult`, `devsInfoChanged`, `messageReceived`).
-- New sensor UL inner-type `0x03` (66B) — sensor's confirmation of
-  the grant, sent immediately after.
+## Reference — how we got here
 
-### Phase Y4 — drive a real pair from the mock (next)
+### Superseded approach: mock UniFi controller (Option Y)
 
-We now have ground truth on every controller-side behaviour needed.
-Path to a sensor pairing via our mock:
+Early RE established that the Ubiquiti bridge is a **stateless LoRa↔JSON-RPC
+relay** that depends on a UniFi controller (over `ws://…:41522`,
+`permessage-deflate`, JSON-RPC with `r`/`o` prefix bytes) for all pairing
+intelligence — per-sensor keys, identity, `networkId`, the 70-byte body, etc.
 
-1. **Replay-mode mock**: extend
-   [`tools/mock_controller/server.py`](../tools/mock_controller/server.py)
-   so that on bridge connection it walks the captured pair script in
-   order — `bridgeInfoGet` request → `keyExchange` → `authorize` →
-   `discoveryStart` → on incoming `discoveryResult` event for a known
-   sensor, push `addDevice` with the persistent key, then on incoming
-   `messageReceived` events, push the captured `sendMessage.data`
-   bytes (including the 70-byte grant) at the right step.
-2. **Test against the same already-paired sensor first.** Force a
-   re-pair (factory reset) with our mock as the only controller. If
-   the sensor reaches ACTIVE, Y4 is proven for "known sensor".
-3. **Generalize**: replace canned values with sensor-keyed lookups so
-   we can pair multiple sensors whose keys we've previously captured.
+The plan then was to stand up a mock controller that the real bridge speaks
+to (Phases Y1–Y5), and eventually replace the bridge too. We got the mock
+handshaking with the bridge and drove the bridge side of a pair to
+`adopted=true`, but the sensor side stalled on replayed (stale) ephemerals —
+the exchange is a two-way Curve25519 ratchet, so canned rotation values
+diverge from the sensor's fresh response.
 
-### Phase Y5 status — see active section above
+**Why this is parked:** rather than satisfy every bridge-local expectation,
+we built a standalone gateway that owns the LoRa side directly and provisions
+its own values — replacing bridge *and* controller. The mock-controller work
+lives on in `tools/mock_controller/server.py` and remains useful for probing
+the real bridge, but it is no longer the path to the open gateway.
 
-The original deferred Y5 has been promoted to the active phase above
-("Phase Y5 — fresh grant generator from UniFi Network static RE")
-after Phase 2 retry-4 (2026-04-30) confirmed that even pairing a
-previously-known sensor requires a fresh-generated grant. The same
-work unblocks both same-sensor re-pair and previously-unseen sensors
-(the algorithm + per-sensor DB schema are universal).
+Key artifacts from that effort, still valid as protocol ground truth:
+
+- **The 70-byte body is plaintext `ADOPT_REQUEST`**, not an encrypted grant.
+  The "encrypted Class B grant" framing was a multi-week blind alley from
+  mis-reading the MSB-clear pattern — both 64B halves are raw X25519 pubkeys.
+  Recovered from UniFi **Protect** (not Network): UNVR firmware v5.0.16,
+  rootfs squashfs at offset `0xE88D45`, webpack module 41118 (`messages.ts`)
+  and `subscribers/deviceAdopt.ts`. See
+  `docs/protocol/superlink_application_layer.md`.
+- **Controller JSON-RPC vocabulary**: `bridgeInfoGet`, `keyExchange`,
+  `authorize`, `discoveryStart`, `addDevice`, `removeDevice`, `sendMessage`;
+  events `discoveryResult`, `devsInfoChanged`, `messageReceived`. Captured by
+  LD_PRELOAD-hooking `SSL_read`/`SSL_write` (`tools/keyhook/ssl_decode.py`).
+  See `docs/protocol/controller_websocket_api.md` and `controller_y3_findings.md`.
+
+### Parked: Option X — full static RE of the grant assembler
+
+Decompile `sub_52e78` (the 0x43 inner-type-3 "SwitchClassBRsp" handler) and
+trace every field into the 70B body. Superseded by the ADOPT_REQUEST
+recovery above; retained only as a fallback. Notes: body assembly
+`sub_567bc` → `sub_55eb6` (MIC + outer encrypt); XSalsa20 wrapper `sub_3bff8`
+→ `sub_2f682` (crypto_stream_xor); ChallengeRsp path `sub_52090`.
