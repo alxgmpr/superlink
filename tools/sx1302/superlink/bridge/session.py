@@ -50,6 +50,42 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 
+# Global default adoption key. v2 sensor firmware seeds the initial-pairing
+# session-key KDF (keypair+0x30 context) with THIS key, not the pairing key
+# (v1 firmware used the pairing key). Everything else in derive_session_key is
+# unchanged: blake2b32(shared || gw_pub || sensor_pub || context).
+LORA_DEVICE_DEFAULT_ADOPTION_KEY = bytes.fromhex(
+    "c5923a86e166e4bf3f8959643ff1c245f986115ec34946ded0b87dc0d7bd38db"
+)
+
+
+def is_discovery_ad(payload: bytes | None) -> bool:
+    """True if a decrypted 0x40 payload is a SuperLink discovery advertisement.
+
+    v1 firmware: ``01 ae94 NN 00000000``        (8 bytes)
+    v2 firmware: ``02 ae94 NN 00000000 0002``   (10 bytes)
+
+    The ``ae94`` marker at [1:3] is the stable discriminator across firmware
+    versions; the leading byte is the protocol version (1 or 2). Gating on the
+    marker (not the version byte) is what lets the gateway hear v2 sensors.
+    """
+    return (payload is not None and len(payload) >= 8
+            and payload[1:3] == b"\xae\x94"
+            and payload[0] in (0x01, 0x02))
+
+
+def initial_pairing_kdf_context(payload: bytes, pairing_key: bytes) -> bytes:
+    """Session-KDF context for a fresh (unadopted) pairing, by firmware version.
+
+    v2 (payload[0] == 0x02) uses the global default adoption key; v1 uses the
+    pairing key. Only for the initial handshake — a post-commit reconnect uses
+    the rotated addDevice.key instead.
+    """
+    if payload and payload[0] == 0x02:
+        return LORA_DEVICE_DEFAULT_ADOPTION_KEY
+    return pairing_key
+
+
 class State(enum.Enum):
     IDLE = "idle"
     BEACONING = "beaconing"
@@ -133,6 +169,10 @@ class DeviceSession:
             self._kdf_context = (
                 record.kdf_context if record.kdf_context is not None
                 else (kdf_context if kdf_context is not None else pairing_key))
+            # A persisted (adopted) or operator-supplied context is locked in;
+            # only an unset default gets version-selected at discovery time.
+            self._kdf_context_explicit = (
+                record.kdf_context is not None or kdf_context is not None)
             self._transport_key = (
                 record.transport_key if record.transport_key is not None
                 else pairing_key)
@@ -147,6 +187,7 @@ class DeviceSession:
             self._derived_addDevice_fb_key = None
             self._kdf_context = (
                 kdf_context if kdf_context is not None else pairing_key)
+            self._kdf_context_explicit = kdf_context is not None
             self._transport_key = pairing_key
             self._adopted = False
 
@@ -555,8 +596,7 @@ class DeviceSession:
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             frame = decrypt_frame(frame, self.pairing_key,
                                   ul_counter_offset=frame.seq_hi)
-            if (frame.payload and len(frame.payload) >= 2
-                    and frame.payload[0] == 0x01):
+            if is_discovery_ad(frame.payload):
                 self.sensor_mac = frame.mac
                 # Adopted-form discovery carries a non-zero networkId trailer
                 # (`01ae94 8N 0000048f`); unadopted-form is `01ae94 NN 00000000`.
@@ -566,6 +606,15 @@ class DeviceSession:
                 log.info("DISCOVERY from %s ch=%d payload=%s%s",
                          format_mac(frame.mac), channel, frame.payload.hex(),
                          " [ADOPTED-FORM]" if adopted_form else "")
+
+                # Firmware-version-aware session KDF context for a fresh pair:
+                # v2 (payload[0]==0x02) uses the default adoption key, v1 the
+                # pairing key. Skip if the operator pinned --kdf-context or we've
+                # already rotated to addDevice keys (adopted-form reconnect).
+                if (not self._kdf_context_explicit and not self._adopted
+                        and not adopted_form):
+                    self._kdf_context = initial_pairing_kdf_context(
+                        frame.payload, self.pairing_key)
 
                 # Commit observed: rotate to operational keys — session KDF
                 # context = primary addDevice.key, handshake transport key =
