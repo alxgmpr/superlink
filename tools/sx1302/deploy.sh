@@ -11,7 +11,7 @@
 
 set -e
 
-PI_HOST="alex@corecell.local"
+PI_HOST="alex@sx1302.local"
 PI_KEY="$HOME/.ssh/id_ed25519_pi"
 PI_DIR="~/superlink"
 
