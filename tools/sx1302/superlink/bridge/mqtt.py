@@ -5,11 +5,20 @@ import json
 import logging
 
 from .config import MqttConfig
-from .entities import entity_for, discovery_config
+from .entities import (
+    entity_for, discovery_config, button_discovery_config, COMMAND_BUTTONS,
+)
 from .events import (
     Event, PropertyEvent, DeviceInfoEvent, DeviceDiscovered, DeviceStateEvent,
-    SetProperty, AdoptDevice,
+    SetProperty, AdoptDevice, Locate, Reboot, RequestDeviceInfo,
 )
+
+# Command-button name -> factory building the Action from a device MAC.
+_BUTTON_ACTIONS = {
+    "locate": lambda mac: Locate(mac=mac),
+    "reboot": lambda mac: Reboot(mac=mac),
+    "refresh": lambda mac: RequestDeviceInfo(mac=mac),
+}
 
 log = logging.getLogger("superlink.mqtt")
 
@@ -22,6 +31,7 @@ class MqttBridge:
         self.base = config.base_topic
         self.prefix = config.discovery_prefix
         self._discovery_done: set[str] = set()
+        self._buttons_done: set[bytes] = set()   # macs with button discovery sent
         runtime.add_event_sink(self.on_event)
 
     # --- lifecycle ---
@@ -33,6 +43,7 @@ class MqttBridge:
         self.client.on_message = self._paho_on_message
         self.client.connect(self.config.host, self.config.port)
         self.client.subscribe(f"{self.base}/+/+/set")
+        self.client.subscribe(f"{self.base}/+/+/press")
         self.client.subscribe(f"{self.base}/adopt")
         self.client.loop_start()
         self.client.publish(avail, "online", retain=True)
@@ -53,8 +64,20 @@ class MqttBridge:
                                 retain=True)
         elif isinstance(event, DeviceStateEvent):
             state = "online" if event.state in ("adopted", "active") else "offline"
+            if event.state in ("adopted", "active"):
+                self._publish_buttons(event.mac)
             self.client.publish(f"{self.base}/{event.mac.hex()}/availability",
                                 state, retain=True)
+
+    def _publish_buttons(self, mac: bytes) -> None:
+        """Publish LOCATE/REBOOT/refresh button discovery once per device."""
+        if mac in self._buttons_done:
+            return
+        self._buttons_done.add(mac)
+        for name in COMMAND_BUTTONS:
+            topic, payload = button_discovery_config(
+                mac, name, self.base, self.prefix)
+            self.client.publish(topic, json.dumps(payload), retain=True)
 
     def _publish_property(self, ev: PropertyEvent) -> None:
         machex = ev.mac.hex()
@@ -89,15 +112,22 @@ class MqttBridge:
                 return
             self.runtime.submit_action(AdoptDevice(mac=mac))
             return
-        # <base>/<machex>/<name>/set
-        if len(parts) == 4 and parts[0] == self.base and parts[3] == "set":
+        # <base>/<machex>/<name>/{set,press}
+        if len(parts) == 4 and parts[0] == self.base:
             try:
                 mac = bytes.fromhex(parts[1])
             except ValueError:
                 return
-            name = parts[2]
-            self.runtime.submit_action(SetProperty(mac=mac, name_or_id=name,
-                                                   value=_parse_value(payload)))
+            name, action = parts[2], parts[3]
+            if action == "set":
+                self.runtime.submit_action(SetProperty(
+                    mac=mac, name_or_id=name, value=_parse_value(payload)))
+            elif action == "press":
+                factory = _BUTTON_ACTIONS.get(name)
+                if factory is None:
+                    log.warning("unknown button %r", name)
+                    return
+                self.runtime.submit_action(factory(mac))
 
 
 def _parse_value(payload: str):

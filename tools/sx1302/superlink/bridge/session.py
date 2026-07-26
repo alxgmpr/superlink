@@ -38,6 +38,7 @@ from ..decoder import (
     format_mac, parse_frame, SuperLinkFrame,
 )
 from .core import OutgoingFrame
+from .events import DeviceStateEvent
 from .mapping import events_from_app_message
 from .store import DeviceRecord
 
@@ -312,12 +313,18 @@ class DeviceSession:
         except Exception as exc:  # noqa: BLE001 - decode is best-effort
             log.debug("app-message decode failed: %s", exc)
             return []
-        # Learn the device type from a DEVICE_INFO_REPORT so later decodes can
-        # use device-specific property profiles.
+        # Learn from a DEVICE_INFO_REPORT: the device type (for device-specific
+        # property profiles) and the propertyId->valueSize map (so subsequent
+        # PROPERTY_REPORT/SET frames decode against fixed sizes instead of the
+        # opaque grab-the-rest fallback).
         for ev in events:
             dtype = getattr(ev, "device_type", None)
             if dtype is not None:
                 self._device_type = dtype
+            supported = getattr(ev, "supported_properties", None)
+            if supported is not None:
+                self._prop_sizes = {p["propertyId"]: p["valueSize"]
+                                    for p in supported}
         return events
 
     def _next_dl_body(self) -> bytes | None:
@@ -632,6 +639,13 @@ class DeviceSession:
                              "transport(fallbackKey)=%s",
                              self._kdf_context[:8].hex(),
                              self._transport_key[:8].hex())
+                    # Signal the commit so the runtime persists the rotated
+                    # addDevice keys NOW. Without this the keys live only in
+                    # memory until a graceful SIGINT flush; a restart before
+                    # then loses them (store stays empty despite an operational
+                    # adopted session).
+                    events.append(DeviceStateEvent(mac=frame.mac,
+                                                   state="adopted"))
                     self._on_commit()
 
                 # Build 0x62 ConnectionRsp on paired DL channel.

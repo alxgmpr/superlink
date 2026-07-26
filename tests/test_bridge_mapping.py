@@ -43,6 +43,21 @@ def test_action_to_body_requests_and_commands(reg):
     assert action_to_body(Ping(mac=MAC, data=b"\xff"), reg, tag=3) == bytes([4, 3, 0xff])
 
 
+def test_action_to_body_header_only_commands(reg):
+    from superlink.bridge.events import Locate, RequestDeviceInfo, FactoryReset
+    assert action_to_body(Locate(mac=MAC), reg, tag=4) == bytes([8, 4])
+    assert action_to_body(RequestDeviceInfo(mac=MAC), reg, tag=5) == bytes([9, 5])
+    assert action_to_body(FactoryReset(mac=MAC), reg, tag=6) == bytes([7, 6])
+
+
+def test_action_to_body_set_property_raw(reg):
+    from superlink.bridge.events import SetPropertyRaw
+    body = action_to_body(
+        SetPropertyRaw(mac=MAC, property_id=13, channel=0, raw=b"\x00\x3c"),
+        reg, tag=7)
+    assert body == bytes([14, 7, 13, 0, 0x00, 0x3c])
+
+
 def test_adopt_has_no_body(reg):
     from superlink.bridge.events import AdoptDevice
     with pytest.raises(TypeError):

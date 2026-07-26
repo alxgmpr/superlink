@@ -127,3 +127,108 @@ def test_explicit_kdf_context_override_is_not_clobbered_by_version():
     s.start(now=0.0)
     s.feed(_craft_discovery_frame(V2_DISCOVERY_PAYLOAD), channel=1, now=1.0)
     assert s._kdf_context == override
+
+
+# --- commit observation emits a persistable "adopted" state event ---
+
+# Adopted-form v2 discovery: non-zero networkId trailer (0x048f) is the reliable
+# commit discriminator (unadopted-form carries 00000000).
+ADOPTED_DISCOVERY_PAYLOAD = bytes.fromhex("02ae94950000048f0002")
+
+
+def test_commit_observed_emits_adopted_state_event():
+    """When the sensor commits (adopted-form 0x40 while _adopt_pending), the
+    session must EMIT DeviceStateEvent(state="adopted") so the runtime persists
+    the rotated addDevice keys to disk. Without this event the commit rotates
+    keys in memory but nothing writes them out until a graceful SIGINT — a
+    restart in between loses the keys."""
+    from superlink.bridge.events import DeviceStateEvent
+    s = _session()
+    s.start(now=0.0)
+    # Stage a pending-commit: ADOPT round-trip done, keys stashed, awaiting the
+    # adopted-form 0x40 that signals the sensor committed.
+    s._adopt_pending = True
+    s._adopted = False
+    s._derived_addDevice_key = bytes(range(32))
+    s._derived_addDevice_fb_key = bytes(range(32, 64))
+
+    _, events = s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD),
+                       channel=1, now=1.0)
+
+    assert s._adopted is True                                  # rotation happened
+    adopted_evs = [e for e in events
+                   if isinstance(e, DeviceStateEvent) and e.state == "adopted"]
+    assert adopted_evs, "commit must emit a DeviceStateEvent(state='adopted')"
+    assert adopted_evs[0].mac == SENSOR_MAC
+
+
+def test_no_adopted_event_without_commit():
+    """A plain (unadopted-form / already-adopted) discovery must not spuriously
+    emit an 'adopted' state event — only the actual commit transition does."""
+    from superlink.bridge.events import DeviceStateEvent
+    s = _session()
+    s.start(now=0.0)
+    _, events = s.feed(_craft_discovery_frame(V2_DISCOVERY_PAYLOAD),
+                       channel=1, now=1.0)
+    assert not [e for e in events
+                if isinstance(e, DeviceStateEvent) and e.state == "adopted"]
+
+
+# --- _prop_sizes learned from DEVICE_INFO_REPORT enables PROPERTY_REPORT decode ---
+
+def _device_info_body(props):
+    """Minimal DEVICE_INFO_REPORT body ([10, tag] + fields + supported props).
+
+    props: list of (propertyId, channelCount, valueSize).
+    """
+    body = bytes([10, 0])                     # msgId, tag
+    body += (0x0007).to_bytes(2, "big")       # deviceType
+    body += (1).to_bytes(2, "big")            # fw major
+    body += (1).to_bytes(2, "big")            # fw minor
+    body += (1).to_bytes(2, "big")            # fw patch
+    body += (0xABCD1234).to_bytes(4, "big")   # buildId
+    body += bytes([2])                        # hardwareRevision
+    body += bytes(16)                         # anonymousDeviceId
+    body += bytes([0])                        # supportedMessageIds count = 0
+    body += bytes([len(props)])               # supportedProperties count
+    for pid, ch_count, vsize in props:
+        body += bytes([pid, ch_count, vsize])
+    return body
+
+
+def _frame_with_payload(payload):
+    from superlink.decoder import SuperLinkFrame
+    return SuperLinkFrame(mctrl=0xE0, dctrl=0x54, mac=SENSOR_MAC,
+                          seq_hi=0x10, seq_lo=0x00, encrypted=b"",
+                          direction="UL", frame_type="data", payload=payload)
+
+
+def test_device_info_report_populates_prop_sizes():
+    """Observing a DEVICE_INFO_REPORT must record propertyId->valueSize so later
+    PROPERTY_REPORT/SET frames decode against the correct fixed sizes instead of
+    falling back to opaque 'grab the rest' parsing."""
+    s = _session()
+    s._adopted = True                          # _observe only runs when adopted
+    s._observe(_frame_with_payload(
+        _device_info_body([(13, 1, 2), (3, 1, 1)])), channel=1)
+    assert s._prop_sizes == {13: 2, 3: 1}
+
+
+def test_property_report_decodes_with_learned_sizes():
+    """After learning sizes from DEVICE_INFO_REPORT, a two-property
+    PROPERTY_REPORT must decode into two PropertyEvents (each value taking its
+    declared size). Without the sizes, id 13 would swallow the rest of the
+    buffer and only one property would surface."""
+    from superlink.bridge.events import PropertyEvent
+    s = _session()
+    s._adopted = True
+    s._observe(_frame_with_payload(
+        _device_info_body([(13, 1, 2), (3, 1, 1)])), channel=1)
+
+    # PROPERTY_REPORT: id13 ch0 = 003c (2B), id3 ch0 = 64 (1B).
+    report = bytes([12, 0]) + bytes([13, 0, 0x00, 0x3c]) + bytes([3, 0, 0x64])
+    events = s._observe(_frame_with_payload(report), channel=1)
+    prop_evs = [e for e in events if isinstance(e, PropertyEvent)]
+    assert [e.property_id for e in prop_evs] == [13, 3]
+    assert prop_evs[0].raw == b"\x00\x3c"
+    assert prop_evs[1].raw == b"\x64"

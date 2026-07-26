@@ -18,6 +18,12 @@ def test_encode_simple_commands():
     assert appmsg.encode_locate(3) == bytes([8, 3])
 
 
+def test_encode_ping_request():
+    # PING_REQUEST (4): [msgId, tag] + opaque data echoed back as PING_RESPONSE.
+    assert appmsg.encode_ping_request(0x11) == bytes([4, 0x11])
+    assert appmsg.encode_ping_request(0x11, b"\xde\xad") == bytes([4, 0x11, 0xde, 0xad])
+
+
 def test_factory_reset_default_tag_is_nonzero():
     # The sensor silently ignores a tag-0 FACTORY_RESET (0700). The default
     # must be non-zero; 0x35 is the ground-truth controller value we verified
