@@ -183,7 +183,12 @@ def main():
                     desc = describe_event(ev)
                     if desc:
                         log.info("EVENT %s", desc)
-                    if idx < len(specs) and expected_response(specs[idx], ev):
+                    # Only accept a response once the command was actually
+                    # queued at least once (fired>=1) — otherwise ambient 0x54
+                    # telemetry PropertyEvents false-advance property_request
+                    # before we ever send the 0x0b.
+                    if (idx < len(specs) and fired >= 1
+                            and expected_response(specs[idx], ev)):
                         results[specs[idx]] = True
                         log.info("*** RESPONSE for '%s' — advancing ***",
                                  specs[idx])
