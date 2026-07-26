@@ -32,8 +32,9 @@ from superlink.bridge.events import (
     DeviceInfoEvent, PropertyEvent, RawMessageEvent, DeviceStateEvent,
 )
 from superlink.bridge.profiles import ProfileRegistry
-from superlink.bridge.session import DeviceSession
+from superlink.bridge.session import DeviceSession, State
 from superlink.bridge.store import JsonDeviceStore
+from superlink.crypto import generate_keypair
 from superlink.decoder import parse_frame
 from superlink.hal import SX1302, BW_500KHZ
 
@@ -161,6 +162,8 @@ def main():
     results = {}            # spec -> True if response seen
     deadline = time.time() + args.timeout
     was_active = False
+    active_since = 0.0      # when the current ACTIVE session started
+    got_0x53 = False        # a 0x53 command window opened this ACTIVE session
     try:
         while time.time() < deadline and idx < len(specs):
             for pkt in hal.receive():
@@ -172,10 +175,41 @@ def main():
                 log.info("RX ch=%d dctrl=0x%02X seq=%02X.%02X state=%s",
                          pkt.ul_channel, fr.dctrl, fr.seq_hi, fr.seq_lo,
                          sess.state)
+
+                # Not every reconnect opens a 0x53 command window. If a fresh
+                # discovery arrives while we're ACTIVE but the current command
+                # never got a window, drop to BEACONING so this 0x40 re-runs the
+                # handshake — another shot at a 0x53. The sensor re-advertises
+                # ~every 30s, so this retries handshakes until one yields a
+                # window instead of dead-ending ACTIVE (where 0x40s get swallowed
+                # as app messages).
+                if (fr.dctrl == 0x40 and sess.session_key is not None
+                        and idx < len(specs) and not got_0x53
+                        and time.time() - active_since > 8):
+                    log.info("re-arm handshake: 0x40 while ACTIVE, '%s' unsent "
+                             "(no 0x53 window this session) — rebuilding session",
+                             specs[idx])
+                    # Rebuild a pristine session from the record — the exact
+                    # known-good state the initial handshake used. Field-poking
+                    # the live session left stale seq/mgmt counters that the
+                    # sensor wouldn't complete the 0x42 for.
+                    sess = DeviceSession(rec, gw_mac=cfg.gw_mac,
+                                         pairing_key=cfg.pairing_key,
+                                         profiles=ProfileRegistry.load(),
+                                         beacon_interval=args.beacon_interval)
+                    sess.start()
+                    was_active = False
+                    fired = 0
+
                 frames, events = sess.feed(fr, pkt.ul_channel, time.monotonic())
+
+                if fr.dctrl == 0x53:
+                    got_0x53 = True
 
                 if sess.session_key is not None and not was_active:
                     was_active = True
+                    active_since = time.time()
+                    got_0x53 = False
                     spec_started_at = time.time()
                     log.info(">>> session ACTIVE (session_key derived) <<<")
 
