@@ -11,6 +11,13 @@ log:
   level: "INFO"
   csv: null                   # optional path to append decoded events as CSV
 
+# Operator control socket: inject app-layer commands into the RUNNING daemon
+# without killing it (killing it drops the SX1302 and red-lights the sensor).
+# On by default at the path below; set `control_socket: null` to disable.
+# Send a command with:
+#   python3 -m superlink.bridge.control send "property_set_raw 13 0 012c"
+control_socket: "/tmp/superlink_bridge.sock"
+
 # Optional: MQTT / Home Assistant. DISABLED by default — uncomment this whole
 # block (and set `host`) to enable. With it commented out, the daemon runs with
 # no MQTT and no paho dependency.

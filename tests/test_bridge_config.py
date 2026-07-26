@@ -1,5 +1,6 @@
 import pytest
 from superlink.bridge.config import RuntimeConfig, ADOPT_ALL, DEFAULT_PAIRING_KEY
+from superlink.bridge.control import DEFAULT_SOCKET_PATH
 
 YAML_LIST = """
 gw_mac: "010203040506"
@@ -51,3 +52,20 @@ def test_adopt_all(tmp_path):
 def test_bad_gw_mac(tmp_path):
     with pytest.raises(ValueError):
         RuntimeConfig.load(_write(tmp_path, 'gw_mac: "0102"\nadopt: all\n'))
+
+
+def test_control_socket_defaults_on(tmp_path):
+    c = RuntimeConfig.load(_write(tmp_path, YAML_ALL))
+    assert c.control_socket == DEFAULT_SOCKET_PATH
+
+
+def test_control_socket_explicit_path(tmp_path):
+    c = RuntimeConfig.load(_write(
+        tmp_path, 'gw_mac: "010203040506"\nadopt: all\ncontrol_socket: "/tmp/x.sock"\n'))
+    assert c.control_socket == "/tmp/x.sock"
+
+
+def test_control_socket_disabled(tmp_path):
+    c = RuntimeConfig.load(_write(
+        tmp_path, 'gw_mac: "010203040506"\nadopt: all\ncontrol_socket: null\n'))
+    assert c.control_socket is None

@@ -91,6 +91,21 @@ class BridgeRuntime:
         """Thread-safe: enqueue an action to be applied on the poll-loop thread."""
         self._action_queue.put(action)
 
+    def default_mac(self) -> bytes | None:
+        """The MAC a control command targets when none is given.
+
+        Prefer the single adopted device in the store; fall back to a
+        one-element adopt allowlist. Ambiguous (0 or >1) -> None, so the
+        operator must name the device explicitly.
+        """
+        adopted = [r.mac for r in self.store.load_all() if getattr(r, "adopted", False)]
+        if len(adopted) == 1:
+            return adopted[0]
+        allow = self.config.adopt
+        if isinstance(allow, (set, frozenset)) and len(allow) == 1:
+            return next(iter(allow))
+        return None
+
     def _drain_actions(self) -> None:
         while True:
             try:
@@ -148,6 +163,17 @@ def build_runtime(config: RuntimeConfig, hal, store=None) -> BridgeRuntime:
     return BridgeRuntime(config, hal, store=store)
 
 
+def start_control_socket_if_configured(runtime, config):
+    """Start the operator control socket if config.control_socket is set."""
+    if not config.control_socket:
+        return None
+    from .control import ControlSocket
+    cs = ControlSocket(config.control_socket, submit=runtime.submit_action,
+                       default_mac=runtime.default_mac)
+    cs.start()
+    return cs
+
+
 def start_mqtt_if_configured(runtime, config, client=None):
     """Start the MQTT bridge if config.mqtt is set; return it (or None)."""
     if config.mqtt is None:
@@ -171,9 +197,12 @@ def main(argv=None):
     config = RuntimeConfig.load(args.config)
     logging.basicConfig(level=getattr(logging, config.log_level, logging.INFO))
     runtime = build_runtime(config, SX1302())
+    control = start_control_socket_if_configured(runtime, config)
     mqtt_bridge = start_mqtt_if_configured(runtime, config)
     try:
         runtime.run()
     finally:
         if mqtt_bridge is not None:
             mqtt_bridge.stop()
+        if control is not None:
+            control.stop()
