@@ -16,3 +16,18 @@ def test_encode_simple_commands():
     assert appmsg.encode_reboot(1) == bytes([6, 1])
     assert appmsg.encode_factory_reset(2) == bytes([7, 2])
     assert appmsg.encode_locate(3) == bytes([8, 3])
+
+
+def test_encode_ping_request():
+    # PING_REQUEST (4): [msgId, tag] + opaque data echoed back as PING_RESPONSE.
+    assert appmsg.encode_ping_request(0x11) == bytes([4, 0x11])
+    assert appmsg.encode_ping_request(0x11, b"\xde\xad") == bytes([4, 0x11, 0xde, 0xad])
+
+
+def test_factory_reset_default_tag_is_nonzero():
+    # The sensor silently ignores a tag-0 FACTORY_RESET (0700). The default
+    # must be non-zero; 0x35 is the ground-truth controller value we verified
+    # end-to-end on hardware (bridge_adopt_fresh_pass2_DECODED.txt -> 0735).
+    body = appmsg.encode_factory_reset()
+    assert body == bytes([7, 0x35])
+    assert body[1] != 0

@@ -18,8 +18,51 @@ ENTITY_MAP: dict[str, dict] = {
 }
 
 
+# Command buttons exposed per adopted device. Each maps a press to a bridge
+# Action (wired in mqtt.py). name -> HA button metadata.
+COMMAND_BUTTONS: dict[str, dict] = {
+    "locate":  {"name": "Locate", "icon": "mdi:map-marker-radius"},
+    "reboot":  {"name": "Reboot", "device_class": "restart", "icon": "mdi:restart"},
+    "refresh": {"name": "Refresh info", "icon": "mdi:refresh"},
+}
+
+
 def entity_for(name: str) -> dict | None:
     return ENTITY_MAP.get(name)
+
+
+def _device_block(machex: str) -> dict:
+    return {
+        "identifiers": [machex],
+        "name": f"SuperLink {machex}",
+        "manufacturer": "Ubiquiti (OpenSuperLink)",
+        "model": "SuperLink sensor",
+    }
+
+
+def button_discovery_config(mac: bytes, name: str, base_topic: str,
+                            discovery_prefix: str):
+    """HA MQTT-discovery config for a command button (LOCATE/REBOOT/refresh)."""
+    machex = mac.hex()
+    uid = f"{machex}_{name}"
+    meta = COMMAND_BUTTONS[name]
+    payload = {
+        "name": meta["name"],
+        "unique_id": uid,
+        "object_id": uid,
+        "command_topic": f"{base_topic}/{machex}/{name}/press",
+        "payload_press": "PRESS",
+        "availability_topic": f"{base_topic}/{machex}/availability",
+        "payload_available": "online",
+        "payload_not_available": "offline",
+        "device": _device_block(machex),
+    }
+    if "icon" in meta:
+        payload["icon"] = meta["icon"]
+    if "device_class" in meta:
+        payload["device_class"] = meta["device_class"]
+    config_topic = f"{discovery_prefix}/button/{uid}/config"
+    return config_topic, payload
 
 
 def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
@@ -39,12 +82,7 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
         "availability_topic": avail_topic,
         "payload_available": "online",
         "payload_not_available": "offline",
-        "device": {
-            "identifiers": [machex],
-            "name": f"SuperLink {machex}",
-            "manufacturer": "Ubiquiti (OpenSuperLink)",
-            "model": "SuperLink sensor",
-        },
+        "device": _device_block(machex),
     }
     if "device_class" in entity:
         payload["device_class"] = entity["device_class"]

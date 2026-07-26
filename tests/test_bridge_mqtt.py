@@ -79,3 +79,66 @@ def test_start_sets_lwt_and_online():
     assert client.find("superlink/bridge/availability") == "online"
     assert f"superlink/+/+/set" in client.subscriptions
     assert "superlink/adopt" in client.subscriptions
+
+
+# --- command buttons: LOCATE / REBOOT / refresh ---
+
+def test_start_subscribes_button_press_topic():
+    rt, client, bridge = _bridge()
+    bridge.start()
+    assert "superlink/+/+/press" in client.subscriptions
+
+
+def test_button_press_locate_submits_action():
+    from superlink.bridge.events import Locate
+    rt, client, bridge = _bridge()
+    got = []
+    rt.submit_action = lambda a: got.append(a)
+    bridge.start()
+    bridge._on_message(f"superlink/{MH}/locate/press", "PRESS")
+    assert len(got) == 1 and isinstance(got[0], Locate) and got[0].mac == MAC
+
+
+def test_button_press_reboot_submits_action():
+    from superlink.bridge.events import Reboot
+    rt, client, bridge = _bridge()
+    got = []
+    rt.submit_action = lambda a: got.append(a)
+    bridge.start()
+    bridge._on_message(f"superlink/{MH}/reboot/press", "PRESS")
+    assert len(got) == 1 and isinstance(got[0], Reboot) and got[0].mac == MAC
+
+
+def test_refresh_button_requests_device_info():
+    from superlink.bridge.events import RequestDeviceInfo
+    rt, client, bridge = _bridge()
+    got = []
+    rt.submit_action = lambda a: got.append(a)
+    bridge.start()
+    bridge._on_message(f"superlink/{MH}/refresh/press", "PRESS")
+    assert len(got) == 1 and isinstance(got[0], RequestDeviceInfo)
+    assert got[0].mac == MAC
+
+
+def test_buttons_discovery_published_on_adopt():
+    from superlink.bridge.events import DeviceStateEvent
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    for name, comp in (("locate", "button"), ("reboot", "button"),
+                       ("refresh", "button")):
+        cfg = client.find(f"homeassistant/{comp}/{MH}_{name}/config")
+        assert cfg is not None, f"missing discovery for {name}"
+        payload = json.loads(cfg)
+        assert payload["command_topic"] == f"superlink/{MH}/{name}/press"
+
+
+def test_button_discovery_published_once():
+    from superlink.bridge.events import DeviceStateEvent
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="active"))
+    cfg_topic = f"homeassistant/button/{MH}_locate/config"
+    n = sum(1 for t, _, _ in client.published if t == cfg_topic)
+    assert n == 1

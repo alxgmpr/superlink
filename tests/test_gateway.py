@@ -239,18 +239,34 @@ def test_connection_challenge_derives_correct_key():
         generate_keypair, compute_shared_secret, derive_session_key,
     )
 
+    import pysodium
+
     gw_mac = bytes.fromhex("AABBCCDDEEFF")
     session = GatewaySession(gw_mac=gw_mac, pairing_key=DEFAULT_PAIRING_KEY)
     session.start()
 
-    # Manually craft a ConnectionChallenge with a known sensor keypair.
-    # Layout: [13B header] + [32B pubkey] + [4B trailer 03 fe ff 03] = 49B
+    # Craft a ConnectionChallenge with a known sensor keypair, using the real
+    # 49-byte layout confirmed against bridge_pair_keyhook_20260722.log:
+    #   [0:3]   = 01 02 01              header
+    #   [3:35]  = 32B sensor pubkey     (fed into DH)
+    #   [35:45] = 10B inner blob        session_key+zero-nonce -> mac(6) || u32(4)
+    #   [45:49] = 03 fe ff 03           trailer
     sensor_priv, sensor_pub = generate_keypair()
 
-    header_bytes = bytes([0x01, 0x02, 0x01, 0x5D, 0x0B, 0x05,
-                          0x68, 0x21, 0x90, 0xF8, 0xB4, 0x06, 0x2B])
+    # The sensor already holds gw_pub (from the earlier 0x62 ConnRsp) so it can
+    # derive the session key and build the inner challenge blob itself.
+    sensor_shared = compute_shared_secret(sensor_priv, session._pubkey)
+    sensor_key = derive_session_key(
+        sensor_shared, session._pubkey, sensor_pub,
+        context=DEFAULT_PAIRING_KEY,
+    )
+    challenge_u32 = b"\x11\x22\x33\x44"
+    inner_blob = pysodium.crypto_stream_xor(
+        SENSOR_MAC + challenge_u32, 10, b"\x00" * 24, sensor_key)
+
+    header_bytes = bytes([0x01, 0x02, 0x01])
     trailer = bytes([0x03, 0xFE, 0xFF, 0x03])
-    challenge_payload = header_bytes + sensor_pub + trailer
+    challenge_payload = header_bytes + sensor_pub + inner_blob + trailer
     assert len(challenge_payload) == 49
     mic = b"\x00" * 4
 
@@ -261,16 +277,9 @@ def test_connection_challenge_derives_correct_key():
     assert session.state == State.ACTIVE
     assert session.session_key is not None
 
-    # Sensor derives: blake2b(shared || gw_pub || sensor_pub || pairing_key)
-    # The pairing_key context comes from keypair+0x30, populated by the JSON
-    # "add device" handler (sub_5be1c → sub_54020 arg4). For factory pairing
-    # the "key" field == default pairing key.
-    sensor_shared = compute_shared_secret(sensor_priv, session._pubkey)
-    sensor_key = derive_session_key(
-        sensor_shared, session._pubkey, sensor_pub,
-        context=DEFAULT_PAIRING_KEY,
-    )
-
+    # Gateway must have read the pubkey from [3:35] and derived the same key
+    # the sensor did: blake2b(shared || gw_pub || sensor_pub || pairing_key).
+    assert session._remote_pubkey == sensor_pub
     assert session.session_key == sensor_key
 
     # Verify: a frame encrypted by the sensor decrypts correctly
@@ -283,6 +292,46 @@ def test_connection_challenge_derives_correct_key():
     result, _, _ = session.handle_rx(data_raw)
     assert result is not None
     assert result.payload == data_payload
+
+
+def test_connection_challenge_real_bridge_ground_truth():
+    """DH-validated regression lock for the 0x42 pubkey offset.
+
+    Feeds the real Ubiquiti bridge's own 0x42 ConnectionChallenge frame (logged
+    verbatim by the LD_PRELOAD keyhook in bridge_pair_keyhook_20260722.log) into
+    DeviceSession with the exact keypair/context the bridge used, and asserts we
+    reproduce the bridge's own scalarmult pubkey and session key. This is the
+    capture that settled [3:35] vs [13:45] — the bridge fed payload[3:35] into
+    scalarmult, so any reader using [13:45] would derive a different key here."""
+    import pysodium
+    from tests.fixtures.captured_frames import CONN_CHALLENGE_GROUND_TRUTH as GT
+
+    session = GatewaySession(gw_mac=bytes.fromhex("AABBCCDDEEFF"),
+                             pairing_key=DEFAULT_PAIRING_KEY)
+    session.start()
+    # Inject the exact state the real bridge held for this reconnect.
+    session._privkey = GT["gw_priv"]
+    session._pubkey = GT["gw_pub"]
+    session._kdf_context = GT["kdf_context"]
+    session._transport_key = GT["transport_key"]
+
+    # ul_channel=0 -> derive the key but skip the ChallengeRsp TX.
+    session.handle_rx(GT["raw"], ul_channel=0)
+
+    # Pubkey read from [3:35] must equal the bridge's scalarmult PUB.
+    assert session._remote_pubkey == GT["sensor_pubkey"]
+    # And the derived session key must match the bridge's KDF output byte-for-byte.
+    assert session.session_key == GT["session_key"]
+    assert session.state == State.ACTIVE
+
+    # The [35:45] inner blob decrypts (session key, zero nonce) to mac || u32.
+    from superlink.decoder import parse_frame, decrypt_frame
+    frame = decrypt_frame(parse_frame(GT["raw"]), GT["transport_key"],
+                          ul_counter_offset=parse_frame(GT["raw"]).seq_hi)
+    inner = pysodium.crypto_stream_xor(
+        frame.payload[35:45], 10, b"\x00" * 24, session.session_key)
+    assert inner[:6] == GT["inner_sensor_mac"]
+    assert inner[6:10] == GT["inner_u32"]
 
 
 # ---------------------------------------------------------------------------

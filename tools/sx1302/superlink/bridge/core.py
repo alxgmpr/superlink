@@ -45,6 +45,12 @@ class BridgeCore:
         self._started: set[bytes] = set()
         self._discovered: dict[bytes, float] = {}
         self._subscribers: list[Callable[[Event], None]] = []
+        # Running command messageTag. The sensor REJECTS tag 0 (a tag-0
+        # FACTORY_RESET is silently ignored — no 0x74 ACK, no reset; verified
+        # on hardware 2026-07-25). Real controllers use an incrementing non-zero
+        # tag which the sensor echoes in its status reply. Start at 0 so the
+        # first command uses tag 1.
+        self._cmd_tag = 0
         for record in store.load_all():
             self._sessions[record.mac] = session_factory(record)
 
@@ -117,4 +123,6 @@ class BridgeCore:
         session = self._sessions.get(action.mac)
         if session is None:
             return
-        session.queue_body(action_to_body(action, self.profiles))
+        self._cmd_tag = (self._cmd_tag % 0xFF) + 1  # 1..255, never 0
+        session.queue_body(
+            action_to_body(action, self.profiles, tag=self._cmd_tag))

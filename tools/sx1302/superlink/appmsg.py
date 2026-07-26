@@ -113,8 +113,15 @@ def encode_reboot(tag: int = 0) -> bytes:
     return bytes([MessageId.REBOOT, tag & 0xFF])
 
 
-def encode_factory_reset(tag: int = 0) -> bytes:
-    """FACTORY_RESET body: [7, tag]. Header only."""
+def encode_factory_reset(tag: int = 0x35) -> bytes:
+    """FACTORY_RESET body: [7, tag]. Header only.
+
+    `tag` is the messageTag the sensor echoes in its status reply. It MUST be
+    non-zero: a tag-0 body (`0700`) is silently ignored by the sensor (no 0x74
+    ACK, no reset — verified on hardware 2026-07-25). The real controller sends
+    `0735` (capture bridge_adopt_fresh_pass2_DECODED.txt), which we reproduced
+    end-to-end to unpair the sensor; 0x35 is that capture's tag value and the
+    default here. Runtime callers pass an incrementing non-zero tag instead."""
     return bytes([MessageId.FACTORY_RESET, tag & 0xFF])
 
 
