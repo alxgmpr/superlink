@@ -60,6 +60,13 @@ class BridgeRuntime:
             if session is not None:
                 self.store.save(session.to_record())
                 log.info("persisted adopted device %s", event.mac.hex())
+        elif isinstance(event, DeviceStateEvent) and event.state == "discovered":
+            # A previously-adopted device re-advertised as unadopted (factory
+            # reset). Drop the stale record so the fresh pair re-adopts cleanly.
+            if any(r.mac == event.mac for r in self.store.load_all()):
+                self.store.delete(event.mac)
+                log.info("removed stale record for re-discovered %s",
+                         event.mac.hex())
         elif isinstance(event, (PropertyEvent, DeviceInfoEvent)):
             self._log_and_csv(event)
         # Every event fans out to sinks (B's MQTT publisher attaches here).

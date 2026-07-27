@@ -232,6 +232,24 @@ def test_lost_timeout_preserves_pending_bodies():
     assert s._pending_bodies == [b"\x08\x01"]
 
 
+# --- factory-reset auto-re-adopt ---------------------------------------------
+
+UNADOPTED_DISCOVERY_PAYLOAD = bytes.fromhex("02ae9406000000000002")  # zero networkId
+
+
+def test_unadopted_discovery_on_adopted_session_triggers_readopt():
+    from superlink.bridge.session import State
+    from superlink.bridge.events import DeviceStateEvent
+    s = _active_data_session()
+    s._derived_addDevice_key = bytes(range(32))
+    frames, events = s.feed(_craft_discovery_frame(UNADOPTED_DISCOVERY_PAYLOAD),
+                            channel=1, now=5.0)
+    assert s._adopted is False, "factory-reset sensor must clear adoption"
+    assert s._state == State.BEACONING
+    assert any(isinstance(e, DeviceStateEvent) and e.state == "discovered"
+               for e in events)
+
+
 # --- reconnect-storm backoff -------------------------------------------------
 
 def _storm_to_backoff(s, link_lost_timeout=10.0):

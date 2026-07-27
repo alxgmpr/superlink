@@ -437,6 +437,31 @@ class DeviceSession:
         if frame.dctrl == 0x40:
             frame = decrypt_frame(frame, self.pairing_key,
                                   ul_counter_offset=frame.seq_hi)
+            # Factory-reset detection: an adopted session that hears an
+            # UNADOPTED-form discovery (networkId all-zero) means the sensor was
+            # reset and is re-advertising as a fresh device. Clear our adoption so
+            # the fresh pair proceeds, and emit "discovered" so the runtime drops
+            # the now-stale store record.
+            unadopted = (is_discovery_ad(frame.payload)
+                         and frame.payload[4:8] == b"\x00\x00\x00\x00")
+            if self._adopted and unadopted:
+                log.info("factory-reset detected (unadopted 0x40 while adopted) "
+                         "from %s — clearing adoption to re-pair",
+                         format_mac(frame.mac))
+                self._adopted = False
+                self._adopt_pending = False
+                self._derived_addDevice_key = None
+                self._derived_addDevice_fb_key = None
+                self._kdf_context = self.pairing_key
+                self._kdf_context_explicit = False
+                self._transport_key = self.pairing_key
+                self.session_key = None
+                self._state = State.BEACONING
+                return frame, [], [DeviceStateEvent(mac=frame.mac,
+                                                    state="discovered")]
+            # Ordinary reconnect 0x40 — leave it to the liveness timeout to drop
+            # to BEACONING; ignore here (per-0x40 re-handshake loops the sensor).
+            return frame, [], events
         elif frame.dctrl in (0x53, 0x43):
             # Management frames use counter=0 during adoption, but the sensor's
             # mgmt-nonce counter ADVANCES once a command session is active (e.g.
