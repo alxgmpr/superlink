@@ -34,6 +34,7 @@ class RuntimeConfig:
     log_level: str = "INFO"
     csv_path: str | None = None
     mqtt: "MqttConfig | None" = None
+    control_socket: str | None = None
 
     @classmethod
     def load(cls, path: str) -> "RuntimeConfig":
@@ -54,6 +55,11 @@ class RuntimeConfig:
             adopt = {bytes.fromhex(m) for m in raw_adopt}
 
         log = doc.get("log") or {}
+
+        # Operator control socket: on by default (key absent -> standard path);
+        # `control_socket: null` disables it.
+        from .control import DEFAULT_SOCKET_PATH
+        control_socket = doc.get("control_socket", DEFAULT_SOCKET_PATH)
 
         mqtt_doc = doc.get("mqtt")
         mqtt = None
@@ -81,6 +87,7 @@ class RuntimeConfig:
             log_level=log.get("level", "INFO"),
             csv_path=log.get("csv"),
             mqtt=mqtt,
+            control_socket=control_socket,
         )
 
     def is_allowed(self, mac: bytes) -> bool:
