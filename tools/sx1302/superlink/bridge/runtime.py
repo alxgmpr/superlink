@@ -32,6 +32,8 @@ class BridgeRuntime:
         self._csv_writer = None
         self._csv_file = None
         self._action_queue: queue.Queue = queue.Queue()
+        self._tick_interval = 1.0
+        self._last_tick = 0.0
         self.core = BridgeCore(self.store, self.profiles, self._session_factory,
                                auto_adopt=False)
         self.core.subscribe(self._on_event)
@@ -122,6 +124,12 @@ class BridgeRuntime:
             frames = self.core.feed(pkt.payload, pkt.ul_channel, now)
             self._schedule(frames, base_ts=pkt.timestamp_us)
 
+    def tick_if_due(self, now: float) -> None:
+        """Call _maybe_tick at most once per _tick_interval seconds."""
+        if now - self._last_tick >= self._tick_interval:
+            self._last_tick = now
+            self._maybe_tick(now)
+
     def _maybe_tick(self, now: float) -> None:
         # Housekeeping only (session timeouts). No RX packet to correlate, so any
         # frames go out best-effort/immediate.
@@ -144,7 +152,9 @@ class BridgeRuntime:
         log.info("bridge runtime started (HAL %s)", self.hal.version())
         try:
             while not self._stop:
-                self.poll_once(time.monotonic())
+                now = time.monotonic()
+                self.poll_once(now)
+                self.tick_if_due(now)
                 time.sleep(0.01)
         except KeyboardInterrupt:
             log.info("shutting down")

@@ -17,6 +17,17 @@ def _cfg(adopt=ADOPT_ALL, delay=1_000_000, spacing=500_000):
                          downlink_delay_us=delay, burst_spacing_us=spacing)
 
 
+def test_tick_if_due_calls_maybe_tick_at_most_once_per_interval():
+    rt = BridgeRuntime(_cfg(), FakeHal(), store=InMemoryDeviceStore())
+    calls = []
+    rt._maybe_tick = lambda now: calls.append(now)
+    rt._tick_interval = 1.0
+    rt.tick_if_due(now=100.0)      # first call: due (last_tick starts at 0)
+    rt.tick_if_due(now=100.5)      # within interval: skipped
+    rt.tick_if_due(now=101.1)      # interval elapsed: due
+    assert calls == [100.0, 101.1]
+
+
 def test_schedule_timestamps_and_burst_spacing():
     rt = BridgeRuntime(_cfg(), FakeHal(), store=InMemoryDeviceStore())
     frames = [OutgoingFrame(data=b"\xe0\x62aaa", freq_hz=920_400_000, channel=1),
