@@ -108,6 +108,7 @@ class DeviceSession:
     def __init__(self, record: DeviceRecord | None, gw_mac: bytes,
                  pairing_key: bytes, profiles=None,
                  beacon_interval: float = 240.0,
+                 beacon_enabled: bool = False,
                  link_lost_timeout: float = 60.0,
                  reconnect_storm_k: int = 3,
                  reconnect_storm_window: float = 30.0,
@@ -120,6 +121,10 @@ class DeviceSession:
         self.pairing_key = pairing_key
         self.profiles = profiles
         self.beacon_interval = beacon_interval
+        # Beacon TX stays OFF until Track A captures the real beacon format (the
+        # current _beacon_header dctrl is a stub). Transmitting an unverified
+        # beacon on 927.6 is a speculative frame we don't want on air.
+        self.beacon_enabled = beacon_enabled
         self.link_lost_timeout = link_lost_timeout
         # Wall-clock of the last DATA (0x54/0x44) frame — the link-liveness
         # heartbeat. 0x40 discoveries deliberately do NOT refresh this, so a
@@ -277,7 +282,7 @@ class DeviceSession:
         """Time-driven work (beacon emission)."""
         frames: list[OutgoingFrame] = []
         events: list = []
-        if (self._state == State.BEACONING
+        if (self.beacon_enabled and self._state == State.BEACONING
                 and (now - self._last_beacon_time) >= self.beacon_interval):
             from ..hal import BEACON_FREQ_HZ
             header = self._beacon_header()

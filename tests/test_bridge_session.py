@@ -33,11 +33,22 @@ def test_to_record_roundtrips_identity():
     assert rec.mac == SENSOR_MAC
 
 
-def test_beacon_emitted_on_tick_when_due():
-    s = _session()
+def test_beacon_emitted_on_tick_when_due_and_enabled():
+    s = DeviceSession(DeviceRecord(mac=SENSOR_MAC), gw_mac=GW_MAC,
+                      pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),
+                      beacon_enabled=True)
     s.start(now=0.0)                    # enter BEACONING
     frames, _ = s.tick(now=1000.0)      # well past beacon_interval
     assert any(isinstance(f, OutgoingFrame) for f in frames)
+
+
+def test_no_beacon_emitted_by_default():
+    # The beacon frame format is unverified (dctrl stub); TX must stay off until
+    # Track A captures the real beacon. Default sessions never emit one.
+    s = _session()
+    s.start(now=0.0)
+    frames, _ = s.tick(now=1000.0)      # well past beacon_interval, but disabled
+    assert frames == []
 
 
 # --- v2 firmware support: discovery-ad recognition + version-aware KDF ctx ---
