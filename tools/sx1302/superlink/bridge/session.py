@@ -108,6 +108,11 @@ class DeviceSession:
     def __init__(self, record: DeviceRecord | None, gw_mac: bytes,
                  pairing_key: bytes, profiles=None,
                  beacon_interval: float = 240.0,
+                 beacon_enabled: bool = False,
+                 link_lost_timeout: float = 60.0,
+                 reconnect_storm_k: int = 3,
+                 reconnect_storm_window: float = 30.0,
+                 reconnect_backoff: float = 60.0,
                  kdf_context: bytes | None = None,
                  mgmt_counter_start: int = 0x7c,
                  network_id: int = DEFAULT_NETWORK_ID,
@@ -116,6 +121,27 @@ class DeviceSession:
         self.pairing_key = pairing_key
         self.profiles = profiles
         self.beacon_interval = beacon_interval
+        # Beacon TX stays OFF until Track A captures the real beacon format (the
+        # current _beacon_header dctrl is a stub). Transmitting an unverified
+        # beacon on 927.6 is a speculative frame we don't want on air.
+        self.beacon_enabled = beacon_enabled
+        self.link_lost_timeout = link_lost_timeout
+        # Wall-clock of the last DATA (0x54/0x44) frame — the link-liveness
+        # heartbeat. 0x40 discoveries deliberately do NOT refresh this, so a
+        # sensor that switches from telemetry to discovery-spam still times out
+        # and gets re-handshaked instead of being ignored forever.
+        self._last_data_rx = 0.0
+        # Reconnect-storm guard: if K link-lost transitions pile up within the
+        # window without telemetry recovering, back off (ignore discovery) for a
+        # cooldown instead of re-handshaking forever.
+        self.reconnect_storm_k = reconnect_storm_k
+        self.reconnect_storm_window = reconnect_storm_window
+        self.reconnect_backoff = reconnect_backoff
+        self._lost_times: list[float] = []
+        self._backoff_until = 0.0
+        # Latest `now` seen by _dispatch, so _handle_beaconing (no now arg) can
+        # check the backoff window.
+        self._now = 0.0
         self.mgmt_counter_start = mgmt_counter_start
         # Console networkId (4-byte BE trailer in ADOPT_REQUEST). Per-console;
         # any 32-bit value works as long as the same one is used for the life
@@ -218,6 +244,7 @@ class DeviceSession:
         if hasattr(self, "_mgmt_counter"):
             del self._mgmt_counter
         self._last_beacon_time = now
+        self._last_data_rx = now
         log.info("Session started, entering BEACONING state")
 
     def beacon_due(self) -> bool:
@@ -255,7 +282,7 @@ class DeviceSession:
         """Time-driven work (beacon emission)."""
         frames: list[OutgoingFrame] = []
         events: list = []
-        if (self._state == State.BEACONING
+        if (self.beacon_enabled and self._state == State.BEACONING
                 and (now - self._last_beacon_time) >= self.beacon_interval):
             from ..hal import BEACON_FREQ_HZ
             header = self._beacon_header()
@@ -263,6 +290,33 @@ class DeviceSession:
             frames.append(OutgoingFrame(data=header, freq_hz=BEACON_FREQ_HZ,
                                         channel=0))
             log.info("Emitted beacon on tick (%d bytes)", len(header))
+
+        # Link-lost: an ACTIVE session that has gone silent (no telemetry) past
+        # the timeout drops back to BEACONING so the sensor's next 0x40 discovery
+        # re-handshakes normally. Gating on the timeout (not per-0x40) naturally
+        # rate-limits re-handshakes — the fix for the teardown loop. Keys, queued
+        # bodies, and adoption survive; only the volatile session key clears.
+        if (self._state == State.ACTIVE
+                and (now - self._last_data_rx) >= self.link_lost_timeout):
+            log.info("link lost: no telemetry for %.0fs — dropping to BEACONING "
+                     "(will re-handshake on next discovery)",
+                     now - self._last_data_rx)
+            self._state = State.BEACONING
+            self.session_key = None
+            if self.sensor_mac:
+                events.append(DeviceStateEvent(mac=self.sensor_mac, state="lost"))
+            # Storm accounting: too many losses in the window without recovery
+            # means re-handshaking isn't helping — back off.
+            self._lost_times = [t for t in self._lost_times
+                                if now - t <= self.reconnect_storm_window]
+            self._lost_times.append(now)
+            if len(self._lost_times) >= self.reconnect_storm_k:
+                self._backoff_until = now + self.reconnect_backoff
+                self._lost_times.clear()
+                log.warning("reconnect storm (%d losses in %.0fs) — backing off "
+                            "%.0fs before answering discovery again",
+                            self.reconnect_storm_k, self.reconnect_storm_window,
+                            self.reconnect_backoff)
         return frames, events
 
     def to_record(self) -> DeviceRecord:
@@ -292,14 +346,26 @@ class DeviceSession:
         if frame is None:
             return None, [], []
 
-        if self._state == State.ACTIVE:
-            return self._handle_active(frame, channel)
-        elif self._state == State.BEACONING:
-            return self._handle_beaconing(frame, channel)
+        self._now = now
+        # Telemetry is the link-liveness heartbeat; discovery/mgmt frames are not.
+        if frame.dctrl in (0x54, 0x44):
+            self._last_data_rx = now
+        was_active = self._state == State.ACTIVE
 
-        log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
-                  self._state.value, frame.dctrl, format_mac(frame.mac))
-        return None, [], []
+        if self._state == State.ACTIVE:
+            result = self._handle_active(frame, channel)
+        elif self._state == State.BEACONING:
+            result = self._handle_beaconing(frame, channel)
+        else:
+            log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
+                      self._state.value, frame.dctrl, format_mac(frame.mac))
+            result = (None, [], [])
+
+        # Just (re)entered ACTIVE via a handshake — grant a grace period so the
+        # liveness timeout doesn't fire before telemetry resumes.
+        if not was_active and self._state == State.ACTIVE:
+            self._last_data_rx = now
+        return result
 
     # --------------------------------------------------------- hooks (adapter)
     def _observe(self, frame: SuperLinkFrame, channel: int) -> list:
@@ -376,6 +442,31 @@ class DeviceSession:
         if frame.dctrl == 0x40:
             frame = decrypt_frame(frame, self.pairing_key,
                                   ul_counter_offset=frame.seq_hi)
+            # Factory-reset detection: an adopted session that hears an
+            # UNADOPTED-form discovery (networkId all-zero) means the sensor was
+            # reset and is re-advertising as a fresh device. Clear our adoption so
+            # the fresh pair proceeds, and emit "discovered" so the runtime drops
+            # the now-stale store record.
+            unadopted = (is_discovery_ad(frame.payload)
+                         and frame.payload[4:8] == b"\x00\x00\x00\x00")
+            if self._adopted and unadopted:
+                log.info("factory-reset detected (unadopted 0x40 while adopted) "
+                         "from %s — clearing adoption to re-pair",
+                         format_mac(frame.mac))
+                self._adopted = False
+                self._adopt_pending = False
+                self._derived_addDevice_key = None
+                self._derived_addDevice_fb_key = None
+                self._kdf_context = self.pairing_key
+                self._kdf_context_explicit = False
+                self._transport_key = self.pairing_key
+                self.session_key = None
+                self._state = State.BEACONING
+                return frame, [], [DeviceStateEvent(mac=frame.mac,
+                                                    state="discovered")]
+            # Ordinary reconnect 0x40 — leave it to the liveness timeout to drop
+            # to BEACONING; ignore here (per-0x40 re-handshake loops the sensor).
+            return frame, [], events
         elif frame.dctrl in (0x53, 0x43):
             # Management frames use counter=0 during adoption, but the sensor's
             # mgmt-nonce counter ADVANCES once a command session is active (e.g.
@@ -599,6 +690,10 @@ class DeviceSession:
         events: list = []
 
         if frame.dctrl == 0x40:
+            if self._now < self._backoff_until:
+                # Reconnect-storm backoff: swallow discovery (no ConnRsp) until
+                # the cooldown elapses, so we stop feeding a re-handshake loop.
+                return frame, [], events
             # Discovery advertisement — decrypt with default pairing key,
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             frame = decrypt_frame(frame, self.pairing_key,

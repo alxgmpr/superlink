@@ -35,6 +35,7 @@ class RuntimeConfig:
     csv_path: str | None = None
     mqtt: "MqttConfig | None" = None
     control_socket: str | None = None
+    link_lost_timeout: float = 60.0
 
     @classmethod
     def load(cls, path: str) -> "RuntimeConfig":
@@ -88,6 +89,7 @@ class RuntimeConfig:
             csv_path=log.get("csv"),
             mqtt=mqtt,
             control_socket=control_socket,
+            link_lost_timeout=float(doc.get("link_lost_timeout", 60.0)),
         )
 
     def is_allowed(self, mac: bytes) -> bool:

@@ -33,11 +33,22 @@ def test_to_record_roundtrips_identity():
     assert rec.mac == SENSOR_MAC
 
 
-def test_beacon_emitted_on_tick_when_due():
-    s = _session()
+def test_beacon_emitted_on_tick_when_due_and_enabled():
+    s = DeviceSession(DeviceRecord(mac=SENSOR_MAC), gw_mac=GW_MAC,
+                      pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),
+                      beacon_enabled=True)
     s.start(now=0.0)                    # enter BEACONING
     frames, _ = s.tick(now=1000.0)      # well past beacon_interval
     assert any(isinstance(f, OutgoingFrame) for f in frames)
+
+
+def test_no_beacon_emitted_by_default():
+    # The beacon frame format is unverified (dctrl stub); TX must stay off until
+    # Track A captures the real beacon. Default sessions never emit one.
+    s = _session()
+    s.start(now=0.0)
+    frames, _ = s.tick(now=1000.0)      # well past beacon_interval, but disabled
+    assert frames == []
 
 
 # --- v2 firmware support: discovery-ad recognition + version-aware KDF ctx ---
@@ -172,6 +183,115 @@ def test_no_adopted_event_without_commit():
                        channel=1, now=1.0)
     assert not [e for e in events
                 if isinstance(e, DeviceStateEvent) and e.state == "adopted"]
+
+
+# --- telemetry-liveness timeout: ACTIVE -> BEACONING on silence ----------------
+
+def _active_data_session(link_lost_timeout=60.0):
+    from superlink.bridge.session import State
+    s = DeviceSession(DeviceRecord(mac=SENSOR_MAC, adopted=True), gw_mac=GW_MAC,
+                      pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),
+                      link_lost_timeout=link_lost_timeout)
+    s.start(now=0.0)
+    s._state = State.ACTIVE
+    s.session_key = bytes(range(32))
+    s.sensor_mac = SENSOR_MAC
+    s._adopted = True
+    s._last_data_rx = 0.0
+    return s
+
+
+def _data_frame_0x54():
+    from superlink.decoder import SuperLinkFrame
+    return SuperLinkFrame(mctrl=0xE0, dctrl=0x54, mac=SENSOR_MAC, seq_hi=0x10,
+                          seq_lo=0x00, encrypted=b"", direction="UL",
+                          frame_type="data", payload=None)
+
+
+def test_active_drops_to_beaconing_after_link_lost_timeout():
+    from superlink.bridge.session import State
+    from superlink.bridge.events import DeviceStateEvent
+    s = _active_data_session(link_lost_timeout=60.0)
+    frames, events = s.tick(now=61.0)            # 61s of silence > 60s timeout
+    assert s._state == State.BEACONING
+    assert s.session_key is None
+    assert any(isinstance(e, DeviceStateEvent) and e.state == "lost" for e in events)
+
+
+def test_data_frame_refreshes_liveness():
+    from superlink.bridge.session import State
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.feed(_data_frame_0x54(), channel=1, now=50.0)   # telemetry at t=50
+    s.tick(now=100.0)                                  # only 50s since data
+    assert s._state == State.ACTIVE                    # still healthy
+
+
+def test_discovery_0x40_does_not_refresh_liveness():
+    # A reconnecting sensor sends 0x40s, NOT telemetry. Those must not keep the
+    # link "alive" — otherwise an ACTIVE session ignoring 0x40 strands it forever.
+    from superlink.bridge.session import State
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD), channel=1, now=50.0)
+    s.tick(now=61.0)                                    # 61s since last DATA
+    assert s._state == State.BEACONING                 # timed out despite the 0x40
+
+
+def test_lost_timeout_preserves_pending_bodies():
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.queue_body(b"\x08\x01")                          # a LOCATE-ish body
+    s.tick(now=61.0)
+    assert s._pending_bodies == [b"\x08\x01"]
+
+
+# --- factory-reset auto-re-adopt ---------------------------------------------
+
+UNADOPTED_DISCOVERY_PAYLOAD = bytes.fromhex("02ae9406000000000002")  # zero networkId
+
+
+def test_unadopted_discovery_on_adopted_session_triggers_readopt():
+    from superlink.bridge.session import State
+    from superlink.bridge.events import DeviceStateEvent
+    s = _active_data_session()
+    s._derived_addDevice_key = bytes(range(32))
+    frames, events = s.feed(_craft_discovery_frame(UNADOPTED_DISCOVERY_PAYLOAD),
+                            channel=1, now=5.0)
+    assert s._adopted is False, "factory-reset sensor must clear adoption"
+    assert s._state == State.BEACONING
+    assert any(isinstance(e, DeviceStateEvent) and e.state == "discovered"
+               for e in events)
+
+
+# --- reconnect-storm backoff -------------------------------------------------
+
+def _storm_to_backoff(s, link_lost_timeout=10.0):
+    """Drive 3 lost transitions (as re-handshakes would) to trip the storm guard."""
+    from superlink.bridge.session import State
+    for t in (11.0, 22.0, 33.0):
+        s._state = State.ACTIVE
+        s.session_key = bytes(range(32))
+        s._last_data_rx = t - 11.0
+        s.tick(now=t)
+
+
+def test_reconnect_storm_triggers_backoff():
+    from superlink.bridge.core import OutgoingFrame
+    s = _active_data_session(link_lost_timeout=10.0)
+    _storm_to_backoff(s)
+    # A fresh discovery in BEACONING must be ignored (backing off).
+    frames, _ = s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD),
+                       channel=1, now=34.0)
+    assert not any(isinstance(f, OutgoingFrame) for f in frames), \
+        "during backoff a 0x40 must not be answered with a ConnRsp"
+
+
+def test_backoff_clears_after_cooldown():
+    from superlink.bridge.core import OutgoingFrame
+    s = _active_data_session(link_lost_timeout=10.0)
+    _storm_to_backoff(s)
+    # After the 60s cooldown, discovery is answered again.
+    frames, _ = s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD),
+                       channel=1, now=34.0 + 61.0)
+    assert any(isinstance(f, OutgoingFrame) for f in frames)
 
 
 # --- _prop_sizes learned from DEVICE_INFO_REPORT enables PROPERTY_REPORT decode ---

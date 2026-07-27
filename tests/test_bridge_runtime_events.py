@@ -53,6 +53,17 @@ def test_adopted_state_persists_record():
     assert len(saved) == 1 and saved[0].mac == MAC
 
 
+def test_discovered_state_event_deletes_stale_record():
+    # A factory-reset device re-advertises as unadopted; the session emits
+    # DeviceStateEvent(state="discovered"). The runtime must drop the stale
+    # adopted record so the fresh pair re-adopts cleanly.
+    store = InMemoryDeviceStore()
+    store.save(DeviceRecord(mac=MAC, adopted=True))
+    rt = _runtime({MAC}, store=store)
+    rt._on_event(DeviceStateEvent(mac=MAC, state="discovered"))
+    assert all(r.mac != MAC for r in store.load_all())
+
+
 def test_property_event_reaches_sink():
     rt = _runtime({MAC})
     seen = []
