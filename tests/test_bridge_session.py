@@ -174,6 +174,64 @@ def test_no_adopted_event_without_commit():
                 if isinstance(e, DeviceStateEvent) and e.state == "adopted"]
 
 
+# --- telemetry-liveness timeout: ACTIVE -> BEACONING on silence ----------------
+
+def _active_data_session(link_lost_timeout=60.0):
+    from superlink.bridge.session import State
+    s = DeviceSession(DeviceRecord(mac=SENSOR_MAC, adopted=True), gw_mac=GW_MAC,
+                      pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),
+                      link_lost_timeout=link_lost_timeout)
+    s.start(now=0.0)
+    s._state = State.ACTIVE
+    s.session_key = bytes(range(32))
+    s.sensor_mac = SENSOR_MAC
+    s._adopted = True
+    s._last_data_rx = 0.0
+    return s
+
+
+def _data_frame_0x54():
+    from superlink.decoder import SuperLinkFrame
+    return SuperLinkFrame(mctrl=0xE0, dctrl=0x54, mac=SENSOR_MAC, seq_hi=0x10,
+                          seq_lo=0x00, encrypted=b"", direction="UL",
+                          frame_type="data", payload=None)
+
+
+def test_active_drops_to_beaconing_after_link_lost_timeout():
+    from superlink.bridge.session import State
+    from superlink.bridge.events import DeviceStateEvent
+    s = _active_data_session(link_lost_timeout=60.0)
+    frames, events = s.tick(now=61.0)            # 61s of silence > 60s timeout
+    assert s._state == State.BEACONING
+    assert s.session_key is None
+    assert any(isinstance(e, DeviceStateEvent) and e.state == "lost" for e in events)
+
+
+def test_data_frame_refreshes_liveness():
+    from superlink.bridge.session import State
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.feed(_data_frame_0x54(), channel=1, now=50.0)   # telemetry at t=50
+    s.tick(now=100.0)                                  # only 50s since data
+    assert s._state == State.ACTIVE                    # still healthy
+
+
+def test_discovery_0x40_does_not_refresh_liveness():
+    # A reconnecting sensor sends 0x40s, NOT telemetry. Those must not keep the
+    # link "alive" — otherwise an ACTIVE session ignoring 0x40 strands it forever.
+    from superlink.bridge.session import State
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD), channel=1, now=50.0)
+    s.tick(now=61.0)                                    # 61s since last DATA
+    assert s._state == State.BEACONING                 # timed out despite the 0x40
+
+
+def test_lost_timeout_preserves_pending_bodies():
+    s = _active_data_session(link_lost_timeout=60.0)
+    s.queue_body(b"\x08\x01")                          # a LOCATE-ish body
+    s.tick(now=61.0)
+    assert s._pending_bodies == [b"\x08\x01"]
+
+
 # --- _prop_sizes learned from DEVICE_INFO_REPORT enables PROPERTY_REPORT decode ---
 
 def _device_info_body(props):

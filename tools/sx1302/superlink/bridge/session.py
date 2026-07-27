@@ -108,6 +108,7 @@ class DeviceSession:
     def __init__(self, record: DeviceRecord | None, gw_mac: bytes,
                  pairing_key: bytes, profiles=None,
                  beacon_interval: float = 240.0,
+                 link_lost_timeout: float = 60.0,
                  kdf_context: bytes | None = None,
                  mgmt_counter_start: int = 0x7c,
                  network_id: int = DEFAULT_NETWORK_ID,
@@ -116,6 +117,12 @@ class DeviceSession:
         self.pairing_key = pairing_key
         self.profiles = profiles
         self.beacon_interval = beacon_interval
+        self.link_lost_timeout = link_lost_timeout
+        # Wall-clock of the last DATA (0x54/0x44) frame — the link-liveness
+        # heartbeat. 0x40 discoveries deliberately do NOT refresh this, so a
+        # sensor that switches from telemetry to discovery-spam still times out
+        # and gets re-handshaked instead of being ignored forever.
+        self._last_data_rx = 0.0
         self.mgmt_counter_start = mgmt_counter_start
         # Console networkId (4-byte BE trailer in ADOPT_REQUEST). Per-console;
         # any 32-bit value works as long as the same one is used for the life
@@ -218,6 +225,7 @@ class DeviceSession:
         if hasattr(self, "_mgmt_counter"):
             del self._mgmt_counter
         self._last_beacon_time = now
+        self._last_data_rx = now
         log.info("Session started, entering BEACONING state")
 
     def beacon_due(self) -> bool:
@@ -263,6 +271,21 @@ class DeviceSession:
             frames.append(OutgoingFrame(data=header, freq_hz=BEACON_FREQ_HZ,
                                         channel=0))
             log.info("Emitted beacon on tick (%d bytes)", len(header))
+
+        # Link-lost: an ACTIVE session that has gone silent (no telemetry) past
+        # the timeout drops back to BEACONING so the sensor's next 0x40 discovery
+        # re-handshakes normally. Gating on the timeout (not per-0x40) naturally
+        # rate-limits re-handshakes — the fix for the teardown loop. Keys, queued
+        # bodies, and adoption survive; only the volatile session key clears.
+        if (self._state == State.ACTIVE
+                and (now - self._last_data_rx) >= self.link_lost_timeout):
+            log.info("link lost: no telemetry for %.0fs — dropping to BEACONING "
+                     "(will re-handshake on next discovery)",
+                     now - self._last_data_rx)
+            self._state = State.BEACONING
+            self.session_key = None
+            if self.sensor_mac:
+                events.append(DeviceStateEvent(mac=self.sensor_mac, state="lost"))
         return frames, events
 
     def to_record(self) -> DeviceRecord:
@@ -292,14 +315,25 @@ class DeviceSession:
         if frame is None:
             return None, [], []
 
-        if self._state == State.ACTIVE:
-            return self._handle_active(frame, channel)
-        elif self._state == State.BEACONING:
-            return self._handle_beaconing(frame, channel)
+        # Telemetry is the link-liveness heartbeat; discovery/mgmt frames are not.
+        if frame.dctrl in (0x54, 0x44):
+            self._last_data_rx = now
+        was_active = self._state == State.ACTIVE
 
-        log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
-                  self._state.value, frame.dctrl, format_mac(frame.mac))
-        return None, [], []
+        if self._state == State.ACTIVE:
+            result = self._handle_active(frame, channel)
+        elif self._state == State.BEACONING:
+            result = self._handle_beaconing(frame, channel)
+        else:
+            log.debug("RX in %s state: dctrl=0x%02X from %s (no handler)",
+                      self._state.value, frame.dctrl, format_mac(frame.mac))
+            result = (None, [], [])
+
+        # Just (re)entered ACTIVE via a handshake — grant a grace period so the
+        # liveness timeout doesn't fire before telemetry resumes.
+        if not was_active and self._state == State.ACTIVE:
+            self._last_data_rx = now
+        return result
 
     # --------------------------------------------------------- hooks (adapter)
     def _observe(self, frame: SuperLinkFrame, channel: int) -> list:
