@@ -65,6 +65,14 @@ def test_control_socket_explicit_path(tmp_path):
     assert c.control_socket == "/tmp/x.sock"
 
 
+def test_link_lost_timeout_default_and_override(tmp_path):
+    c = RuntimeConfig.load(_write(tmp_path, YAML_ALL))
+    assert c.link_lost_timeout == 60.0
+    c2 = RuntimeConfig.load(_write(
+        tmp_path, 'gw_mac: "010203040506"\nadopt: all\nlink_lost_timeout: 45\n'))
+    assert c2.link_lost_timeout == 45.0
+
+
 def test_control_socket_disabled(tmp_path):
     c = RuntimeConfig.load(_write(
         tmp_path, 'gw_mac: "010203040506"\nadopt: all\ncontrol_socket: null\n'))

@@ -41,7 +41,8 @@ class BridgeRuntime:
     def _session_factory(self, record) -> DeviceSession:
         s = DeviceSession(record, gw_mac=self.config.gw_mac,
                           pairing_key=self.config.pairing_key,
-                          profiles=self.profiles)
+                          profiles=self.profiles,
+                          link_lost_timeout=self.config.link_lost_timeout)
         self._sessions[record.mac] = s
         return s
 
