@@ -232,6 +232,39 @@ def test_lost_timeout_preserves_pending_bodies():
     assert s._pending_bodies == [b"\x08\x01"]
 
 
+# --- reconnect-storm backoff -------------------------------------------------
+
+def _storm_to_backoff(s, link_lost_timeout=10.0):
+    """Drive 3 lost transitions (as re-handshakes would) to trip the storm guard."""
+    from superlink.bridge.session import State
+    for t in (11.0, 22.0, 33.0):
+        s._state = State.ACTIVE
+        s.session_key = bytes(range(32))
+        s._last_data_rx = t - 11.0
+        s.tick(now=t)
+
+
+def test_reconnect_storm_triggers_backoff():
+    from superlink.bridge.core import OutgoingFrame
+    s = _active_data_session(link_lost_timeout=10.0)
+    _storm_to_backoff(s)
+    # A fresh discovery in BEACONING must be ignored (backing off).
+    frames, _ = s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD),
+                       channel=1, now=34.0)
+    assert not any(isinstance(f, OutgoingFrame) for f in frames), \
+        "during backoff a 0x40 must not be answered with a ConnRsp"
+
+
+def test_backoff_clears_after_cooldown():
+    from superlink.bridge.core import OutgoingFrame
+    s = _active_data_session(link_lost_timeout=10.0)
+    _storm_to_backoff(s)
+    # After the 60s cooldown, discovery is answered again.
+    frames, _ = s.feed(_craft_discovery_frame(ADOPTED_DISCOVERY_PAYLOAD),
+                       channel=1, now=34.0 + 61.0)
+    assert any(isinstance(f, OutgoingFrame) for f in frames)
+
+
 # --- _prop_sizes learned from DEVICE_INFO_REPORT enables PROPERTY_REPORT decode ---
 
 def _device_info_body(props):

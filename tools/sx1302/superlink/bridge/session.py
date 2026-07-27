@@ -109,6 +109,9 @@ class DeviceSession:
                  pairing_key: bytes, profiles=None,
                  beacon_interval: float = 240.0,
                  link_lost_timeout: float = 60.0,
+                 reconnect_storm_k: int = 3,
+                 reconnect_storm_window: float = 30.0,
+                 reconnect_backoff: float = 60.0,
                  kdf_context: bytes | None = None,
                  mgmt_counter_start: int = 0x7c,
                  network_id: int = DEFAULT_NETWORK_ID,
@@ -123,6 +126,17 @@ class DeviceSession:
         # sensor that switches from telemetry to discovery-spam still times out
         # and gets re-handshaked instead of being ignored forever.
         self._last_data_rx = 0.0
+        # Reconnect-storm guard: if K link-lost transitions pile up within the
+        # window without telemetry recovering, back off (ignore discovery) for a
+        # cooldown instead of re-handshaking forever.
+        self.reconnect_storm_k = reconnect_storm_k
+        self.reconnect_storm_window = reconnect_storm_window
+        self.reconnect_backoff = reconnect_backoff
+        self._lost_times: list[float] = []
+        self._backoff_until = 0.0
+        # Latest `now` seen by _dispatch, so _handle_beaconing (no now arg) can
+        # check the backoff window.
+        self._now = 0.0
         self.mgmt_counter_start = mgmt_counter_start
         # Console networkId (4-byte BE trailer in ADOPT_REQUEST). Per-console;
         # any 32-bit value works as long as the same one is used for the life
@@ -286,6 +300,18 @@ class DeviceSession:
             self.session_key = None
             if self.sensor_mac:
                 events.append(DeviceStateEvent(mac=self.sensor_mac, state="lost"))
+            # Storm accounting: too many losses in the window without recovery
+            # means re-handshaking isn't helping — back off.
+            self._lost_times = [t for t in self._lost_times
+                                if now - t <= self.reconnect_storm_window]
+            self._lost_times.append(now)
+            if len(self._lost_times) >= self.reconnect_storm_k:
+                self._backoff_until = now + self.reconnect_backoff
+                self._lost_times.clear()
+                log.warning("reconnect storm (%d losses in %.0fs) — backing off "
+                            "%.0fs before answering discovery again",
+                            self.reconnect_storm_k, self.reconnect_storm_window,
+                            self.reconnect_backoff)
         return frames, events
 
     def to_record(self) -> DeviceRecord:
@@ -315,6 +341,7 @@ class DeviceSession:
         if frame is None:
             return None, [], []
 
+        self._now = now
         # Telemetry is the link-liveness heartbeat; discovery/mgmt frames are not.
         if frame.dctrl in (0x54, 0x44):
             self._last_data_rx = now
@@ -633,6 +660,10 @@ class DeviceSession:
         events: list = []
 
         if frame.dctrl == 0x40:
+            if self._now < self._backoff_until:
+                # Reconnect-storm backoff: swallow discovery (no ConnRsp) until
+                # the cooldown elapses, so we stop feeding a re-handshake loop.
+                return frame, [], events
             # Discovery advertisement — decrypt with default pairing key,
             # counter=0: pass seq_hi as offset so seq_hi - offset = 0
             frame = decrypt_frame(frame, self.pairing_key,
