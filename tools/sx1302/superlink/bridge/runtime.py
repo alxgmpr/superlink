@@ -199,7 +199,11 @@ def start_mqtt_if_configured(runtime, config, client=None):
     from .mqtt import MqttBridge
     if client is None:
         import paho.mqtt.client as mqtt
-        client = mqtt.Client()
+        # paho 2.x requires an explicit callback API version; 1.x has no such arg.
+        if hasattr(mqtt, "CallbackAPIVersion"):
+            client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        else:
+            client = mqtt.Client()
     bridge = MqttBridge(config.mqtt, runtime, client)
     bridge.start()
     return bridge
