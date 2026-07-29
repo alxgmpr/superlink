@@ -70,6 +70,15 @@ class BridgeRuntime:
                          event.mac.hex())
         elif isinstance(event, (PropertyEvent, DeviceInfoEvent)):
             self._log_and_csv(event)
+            # A DEVICE_INFO_REPORT is when the session learns prop_sizes; persist
+            # the record so a restart keeps them and PROPERTY_REPORTs still
+            # decode into typed events without re-requesting device info.
+            if isinstance(event, DeviceInfoEvent):
+                session = self._sessions.get(event.mac)
+                if session is not None:
+                    self.store.save(session.to_record())
+                    log.info("persisted device-info (prop_sizes) for %s",
+                             event.mac.hex())
         # Every event fans out to sinks (B's MQTT publisher attaches here).
         for sink in self._sinks:
             sink(event)

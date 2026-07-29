@@ -90,3 +90,19 @@ def test_core_owned_session_reaches_handshake_and_emits_0x62():
         "no 0x62 ChallengeRsp emitted on ConnectionChallenge")
     # The session actually transitioned into the handshake (not still IDLE).
     assert core._sessions[SENSOR_MAC].state in ("adopting", "active", "adopted")
+
+
+def test_reaching_active_emits_online_state_event():
+    """Completing the ConnectionChallenge handshake (reaching ACTIVE) must emit
+    a DeviceStateEvent(active) so the MQTT bridge republishes availability as
+    'online'. Without it a reconnect leaves the device stuck 'offline' in Home
+    Assistant even though telemetry is flowing again."""
+    from superlink.bridge.events import DeviceStateEvent
+    core = _core(auto_adopt=True)
+    seen = []
+    core.subscribe(seen.append)
+    core.feed(DISCOVERY_FRAME_RAW, channel=1, now=1.0)
+    core.feed(CONN_CHALLENGE_RAW, channel=1, now=2.0)
+    assert any(isinstance(e, DeviceStateEvent) and e.state == "active"
+               and e.mac == SENSOR_MAC for e in seen), (
+        "no DeviceStateEvent(active) emitted when session reached ACTIVE")

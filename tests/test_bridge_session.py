@@ -33,6 +33,23 @@ def test_to_record_roundtrips_identity():
     assert rec.mac == SENSOR_MAC
 
 
+def test_to_record_persists_learned_prop_sizes():
+    s = _session()
+    s._prop_sizes = {1: 4, 3: 4, 15: 1}
+    assert s.to_record().prop_sizes == {1: 4, 3: 4, 15: 1}
+
+
+def test_prop_sizes_restored_from_record():
+    # A restart rebuilds sessions from the store; the learned property-size map
+    # must come back so PROPERTY_REPORTs decode into typed events immediately,
+    # rather than collapsing to a single opaque property until device info is
+    # re-requested on the next reconnect.
+    rec = DeviceRecord(mac=SENSOR_MAC, prop_sizes={1: 4, 7: 2})
+    s = DeviceSession(rec, gw_mac=GW_MAC, pairing_key=DEFAULT_PAIRING_KEY,
+                      profiles=ProfileRegistry.load())
+    assert s._prop_sizes == {1: 4, 7: 2}
+
+
 def test_beacon_emitted_on_tick_when_due_and_enabled():
     s = DeviceSession(DeviceRecord(mac=SENSOR_MAC), gw_mac=GW_MAC,
                       pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),

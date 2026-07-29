@@ -142,3 +142,16 @@ def test_button_discovery_published_once():
     cfg_topic = f"homeassistant/button/{MH}_locate/config"
     n = sum(1 for t, _, _ in client.published if t == cfg_topic)
     assert n == 1
+
+
+def test_active_state_republishes_availability_online():
+    # On a reconnect the session emits DeviceStateEvent(active); the bridge must
+    # republish device availability as online so HA flips the device back from
+    # unavailable after a link drop.
+    from superlink.bridge.events import DeviceStateEvent
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="lost"))
+    assert client.find(f"superlink/{MH}/availability") == "offline"
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="active"))
+    assert client.find(f"superlink/{MH}/availability") == "online"
