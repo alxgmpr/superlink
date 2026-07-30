@@ -41,12 +41,22 @@ class MqttBridge:
         if self.config.username:
             self.client.username_pw_set(self.config.username, self.config.password)
         self.client.on_message = self._paho_on_message
+        self.client.on_connect = self._paho_on_connect
         self.client.connect(self.config.host, self.config.port)
-        self.client.subscribe(f"{self.base}/+/+/set")
-        self.client.subscribe(f"{self.base}/+/+/press")
-        self.client.subscribe(f"{self.base}/adopt")
         self.client.loop_start()
         self.client.publish(avail, "online", retain=True)
+
+    def _paho_on_connect(self, client, userdata, flags, reason_code,
+                         properties=None):
+        # (Re)subscribe on every (re)connect. paho does not restore
+        # subscriptions after an auto-reconnect, and subscribing here (rather
+        # than right after connect()) guarantees it happens post-CONNACK — so
+        # HA command topics keep working across broker blips.
+        client.subscribe(f"{self.base}/+/+/set")
+        client.subscribe(f"{self.base}/+/+/press")
+        client.subscribe(f"{self.base}/adopt")
+        log.info("MQTT connected (rc=%s); subscribed to command topics",
+                 reason_code)
 
     def stop(self) -> None:
         self.client.publish(f"{self.base}/bridge/availability", "offline", retain=True)
@@ -100,6 +110,7 @@ class MqttBridge:
     # --- inbound: MQTT -> actions ---
     def _paho_on_message(self, client, userdata, msg):
         payload = msg.payload.decode() if isinstance(msg.payload, bytes) else msg.payload
+        log.info("MQTT RX %s = %r", msg.topic, payload)
         self._on_message(msg.topic, payload)
 
     def _on_message(self, topic: str, payload: str) -> None:

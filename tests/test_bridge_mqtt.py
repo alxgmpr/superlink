@@ -89,6 +89,19 @@ def test_start_subscribes_button_press_topic():
     assert "superlink/+/+/press" in client.subscriptions
 
 
+def test_resubscribes_on_broker_reconnect():
+    # paho drops subscriptions when the broker connection drops and does NOT
+    # restore them on auto-reconnect unless (re)subscribed in on_connect. Without
+    # that, HA commands silently stop being received after any broker blip.
+    rt, client, bridge = _bridge()
+    bridge.start()
+    client.subscriptions.clear()      # broker dropped -> subs gone
+    client.fire_on_connect()          # auto-reconnect fires on_connect again
+    assert "superlink/+/+/set" in client.subscriptions
+    assert "superlink/+/+/press" in client.subscriptions
+    assert "superlink/adopt" in client.subscriptions
+
+
 def test_button_press_locate_submits_action():
     from superlink.bridge.events import Locate
     rt, client, bridge = _bridge()

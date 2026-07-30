@@ -10,6 +10,7 @@ class FakeMqttClient:
         self.connected = False
         self.loop_running = False
         self.on_message = None
+        self.on_connect = None
 
     def will_set(self, topic, payload=None, retain=False, qos=0):
         self.lwt = (topic, payload, retain)
@@ -19,6 +20,14 @@ class FakeMqttClient:
 
     def connect(self, host, port=1883, keepalive=60):
         self.connected = True
+        # Real paho fires on_connect after CONNACK; model that so subscriptions
+        # registered in the handler are exercised (including on reconnect).
+        self.fire_on_connect()
+
+    def fire_on_connect(self):
+        """Simulate a (re)connect: invoke on_connect with the paho v2 signature."""
+        if self.on_connect is not None:
+            self.on_connect(self, None, {}, 0, None)
 
     def subscribe(self, topic, qos=0):
         self.subscriptions.append(topic)
