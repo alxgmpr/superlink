@@ -3,6 +3,7 @@ from superlink.bridge.runtime import BridgeRuntime
 from superlink.bridge.store import InMemoryDeviceStore, DeviceRecord
 from superlink.bridge.events import (
     DeviceDiscovered, DeviceStateEvent, PropertyEvent, AdoptDevice,
+    DeviceInfoEvent,
 )
 from tests.support.fake_hal import FakeHal
 
@@ -51,6 +52,25 @@ def test_adopted_state_persists_record():
     rt._on_event(DeviceStateEvent(mac=MAC, state="adopted"))
     saved = store.load_all()
     assert len(saved) == 1 and saved[0].mac == MAC
+
+
+def test_device_info_event_persists_prop_sizes():
+    # prop_sizes is learned only from a DEVICE_INFO_REPORT, which arrives well
+    # after the initial adopt-time save. The runtime must re-persist the record
+    # then, so a restart keeps the sizes and PROPERTY_REPORTs still decode.
+    store = InMemoryDeviceStore()
+    rt = _runtime({MAC}, store=store)
+
+    class _SessionWithSizes:
+        def to_record(self):
+            return DeviceRecord(mac=MAC, adopted=True, prop_sizes={1: 4, 3: 4})
+
+    rt._sessions[MAC] = _SessionWithSizes()
+    rt._on_event(DeviceInfoEvent(
+        mac=MAC, device_type=0xAE94, fw_version=(1, 2, 0), hw_revision=4,
+        anon_id=b"\x00" * 16, supported_message_ids=[], supported_properties=[]))
+    saved = store.load_all()
+    assert len(saved) == 1 and saved[0].prop_sizes == {1: 4, 3: 4}
 
 
 def test_discovered_state_event_deletes_stale_record():

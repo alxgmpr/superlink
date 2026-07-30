@@ -34,3 +34,14 @@ def test_json_roundtrip(tmp_path):
     assert len(reloaded) == 1
     r = reloaded[0]
     assert r.mac == MAC and r.fallback_key == b"\x22" * 32 and r.adopted is True
+
+
+def test_json_roundtrip_preserves_prop_sizes_int_keys(tmp_path):
+    # prop_sizes maps int propertyId -> int valueSize. JSON stringifies dict
+    # keys, so the store must restore them as ints, else PROPERTY_REPORT decode
+    # (which looks up integer ids) silently breaks after a bridge restart.
+    path = str(tmp_path / "devices.json")
+    rec = DeviceRecord(mac=MAC, prop_sizes={1: 4, 3: 4, 15: 1})
+    JsonDeviceStore(path).save(rec)
+    reloaded = JsonDeviceStore(path).load_all()[0]
+    assert reloaded.prop_sizes == {1: 4, 3: 4, 15: 1}

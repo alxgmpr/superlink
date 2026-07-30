@@ -19,6 +19,10 @@ class DeviceRecord:
     tx_seq_lo: int = 0
     ul_counter_offset: int = 5
     last_seen: float = 0.0
+    # propertyId -> valueSize, learned from a DEVICE_INFO_REPORT. Persisted so a
+    # bridge restart keeps decoding PROPERTY_REPORTs into typed events without
+    # having to re-request device info on the next reconnect.
+    prop_sizes: dict | None = None
 
 
 _BYTES_FIELDS = ("mac", "primary_key", "fallback_key", "kdf_context", "transport_key")
@@ -37,6 +41,10 @@ def _from_json(d: dict) -> DeviceRecord:
     for k in _BYTES_FIELDS:
         if d.get(k) is not None:
             d[k] = bytes.fromhex(d[k])
+    # JSON object keys are always strings; prop_sizes keys are integer
+    # propertyIds, so restore them to int on load.
+    if d.get("prop_sizes") is not None:
+        d["prop_sizes"] = {int(k): v for k, v in d["prop_sizes"].items()}
     return DeviceRecord(**d)
 
 

@@ -207,6 +207,8 @@ class DeviceSession:
             self._tx_seq_hi = record.tx_seq_hi
             self._tx_seq_lo = record.tx_seq_lo
             self._ul_counter_offset = record.ul_counter_offset
+            if record.prop_sizes is not None:
+                self._prop_sizes = record.prop_sizes
         else:
             self.sensor_mac = None
             self._device_type = None
@@ -332,6 +334,7 @@ class DeviceSession:
             tx_seq_hi=self._tx_seq_hi,
             tx_seq_lo=self._tx_seq_lo,
             ul_counter_offset=self._ul_counter_offset,
+            prop_sizes=self._prop_sizes,
         )
 
     # -------------------------------------------------------------- dispatch
@@ -816,6 +819,11 @@ class DeviceSession:
             self._state = State.ACTIVE
             log.info("Session key derived (kdf_ctx=%s...)",
                      self._kdf_context[:8].hex())
+            # Signal that the link is up so downstream sinks (MQTT) republish
+            # availability as online. On a reconnect the earlier "lost" event
+            # marked the device offline; without this it stays offline in HA
+            # even though telemetry is flowing again.
+            events.append(DeviceStateEvent(mac=self.sensor_mac, state="active"))
 
             # Decrypt 0x42 [35:45] with session_key + zero nonce to recover the
             # 10-byte blob = sensor_mac(6B) + u32(4B). The u32 is a fresh
