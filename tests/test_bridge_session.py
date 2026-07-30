@@ -235,12 +235,39 @@ def test_active_drops_to_beaconing_after_link_lost_timeout():
     assert any(isinstance(e, DeviceStateEvent) and e.state == "lost" for e in events)
 
 
+def _craft_data_frame(session_key, seq_hi=0x10, counter=5,
+                      payload=b"\x0c\x00\x0f\x00\x01"):
+    """A real 0x54 data frame the session can decrypt+MIC-verify under
+    `session_key` (so `_scan_data_counter` finds `counter`)."""
+    from superlink.decoder import build_frame, compute_mic, parse_frame
+    header = bytes([0xE0, 0x54]) + SENSOR_MAC + bytes([seq_hi, 0x00])
+    mic = compute_mic(header, payload)
+    raw = build_frame(0xE0, 0x54, SENSOR_MAC, seq_hi, 0x00, mic, payload,
+                      session_key, counter=counter)
+    return parse_frame(raw)
+
+
 def test_data_frame_refreshes_liveness():
+    # A DECODABLE data frame (MIC verifies under the session key) is the liveness
+    # heartbeat — it must keep the link alive.
     from superlink.bridge.session import State
     s = _active_data_session(link_lost_timeout=60.0)
-    s.feed(_data_frame_0x54(), channel=1, now=50.0)   # telemetry at t=50
+    s.feed(_craft_data_frame(s.session_key), channel=1, now=50.0)  # real telemetry
     s.tick(now=100.0)                                  # only 50s since data
     assert s._state == State.ACTIVE                    # still healthy
+
+
+def test_undecodable_data_does_not_refresh_liveness():
+    # The stale-until-manual-restart trap: a drifted/dead session where the sensor
+    # still emits 0x54s that no longer decrypt. Raw dctrl must NOT count as
+    # liveness, or the link never times out to BEACONING to answer the reconnect.
+    from superlink.bridge.session import State
+    s = _active_data_session(link_lost_timeout=60.0)
+    wrong_key = bytes(range(1, 33))                    # != s.session_key
+    garbage = _craft_data_frame(wrong_key)             # 0x54 that won't MIC-verify
+    s.feed(garbage, channel=1, now=50.0)
+    s.tick(now=61.0)                                   # 61s since last DECODED data
+    assert s._state == State.BEACONING                 # timed out despite the 0x54
 
 
 def test_discovery_0x40_does_not_refresh_liveness():
@@ -331,6 +358,127 @@ def _device_info_body(props):
     for pid, ch_count, vsize in props:
         body += bytes([pid, ch_count, vsize])
     return body
+
+
+# --- watchdog: recover a stuck link that link-lost re-handshake can't fix -----
+#
+# After link-lost drops ACTIVE -> BEACONING, a sensor sometimes gets stuck sending
+# 2-byte "resume" 0x42 ConnChallenges the bridge can't complete (logged
+# "ConnectionChallenge too short"), so telemetry never resumes. The only known
+# recovery is a clean bridge restart, which rebuilds the session from the record
+# with a FRESH DH keypair. The watchdog reproduces that restart in-process: after
+# a deep-silence timeout OR repeated short-0x42 rejections, it re-arms the session
+# (new keypair, back to BEACONING) while preserving adoption/keys.
+
+def _stuck_beaconing_session(watchdog_timeout=150.0, watchdog_short_challenge_k=3,
+                             link_lost_timeout=60.0):
+    """An adopted session already dropped to BEACONING (post link-lost) and
+    silent since t=0 — i.e. the stuck state the watchdog must recover."""
+    from superlink.bridge.session import State
+    s = DeviceSession(DeviceRecord(mac=SENSOR_MAC, adopted=True), gw_mac=GW_MAC,
+                      pairing_key=DEFAULT_PAIRING_KEY, profiles=ProfileRegistry.load(),
+                      link_lost_timeout=link_lost_timeout,
+                      watchdog_timeout=watchdog_timeout,
+                      watchdog_short_challenge_k=watchdog_short_challenge_k)
+    s.start(now=0.0)                       # BEACONING, keypair generated
+    s._state = State.BEACONING
+    s.session_key = None
+    s.sensor_mac = SENSOR_MAC
+    s._adopted = True
+    s._last_data_rx = 0.0
+    return s
+
+
+def _craft_short_challenge_frame():
+    """A 2-byte 'resume' 0x42 ConnChallenge (the stuck-state signature), encrypted
+    with the transport key (pairing key for an un-rotated session)."""
+    from superlink.decoder import build_frame, compute_mic, parse_frame
+    payload = b"\x01\x00"
+    header = bytes([0xE0, 0x42]) + SENSOR_MAC + bytes([0x00, 0x00])
+    mic = compute_mic(header, payload)
+    raw = build_frame(0xE0, 0x42, SENSOR_MAC, 0x00, 0x00, mic, payload,
+                      DEFAULT_PAIRING_KEY, counter=0)
+    return parse_frame(raw)
+
+
+def test_watchdog_rearms_after_deep_silence():
+    from superlink.bridge.session import State
+    s = _stuck_beaconing_session(watchdog_timeout=150.0)
+    old_pubkey = s._pubkey
+    frames, events = s.tick(now=151.0)          # silent 151s > watchdog_timeout
+    assert s._state == State.BEACONING
+    assert s.session_key is None
+    assert s._pubkey != old_pubkey, "watchdog must generate a fresh DH keypair"
+
+
+def test_watchdog_does_not_rearm_before_timeout():
+    s = _stuck_beaconing_session(watchdog_timeout=150.0)
+    old_pubkey = s._pubkey
+    s.tick(now=149.0)                            # still under the timeout
+    assert s._pubkey == old_pubkey, "no re-arm before the watchdog timeout"
+
+
+def test_watchdog_preserves_adoption_and_keys():
+    s = _stuck_beaconing_session(watchdog_timeout=150.0)
+    s._derived_addDevice_key = bytes(range(32))
+    s._derived_addDevice_fb_key = bytes(range(32, 64))
+    s._kdf_context = s._derived_addDevice_key
+    s._transport_key = s._derived_addDevice_fb_key
+    s._prop_sizes = {1: 4, 15: 1}
+    s.tick(now=151.0)
+    assert s._adopted is True
+    assert s._derived_addDevice_key == bytes(range(32))
+    assert s._derived_addDevice_fb_key == bytes(range(32, 64))
+    assert s._kdf_context == bytes(range(32))
+    assert s._transport_key == bytes(range(32, 64))
+    assert s._prop_sizes == {1: 4, 15: 1}
+
+
+def test_watchdog_rearm_self_rate_limits():
+    # Re-arm resets the silence clock, so a follow-up tick must not re-arm again.
+    s = _stuck_beaconing_session(watchdog_timeout=150.0)
+    s.tick(now=151.0)
+    pubkey_after_rearm = s._pubkey
+    s.tick(now=152.0)
+    assert s._pubkey == pubkey_after_rearm
+
+
+def test_watchdog_disabled_when_timeout_zero():
+    s = _stuck_beaconing_session(watchdog_timeout=0.0)
+    old_pubkey = s._pubkey
+    s.tick(now=100000.0)
+    assert s._pubkey == old_pubkey, "watchdog_timeout=0 disables the silence trigger"
+
+
+def test_repeated_short_challenge_triggers_rearm():
+    from superlink.bridge.session import State
+    s = _stuck_beaconing_session(watchdog_timeout=0.0,  # isolate the short-0x42 path
+                                 watchdog_short_challenge_k=3)
+    old_pubkey = s._pubkey
+    for _ in range(3):
+        s.feed(_craft_short_challenge_frame(), channel=1, now=5.0)
+    frames, events = s.tick(now=6.0)
+    assert s._pubkey != old_pubkey, \
+        "3 short 0x42 rejections must escalate to a watchdog re-arm"
+    assert s._state == State.BEACONING
+
+
+def test_short_challenge_count_below_threshold_does_not_rearm():
+    s = _stuck_beaconing_session(watchdog_timeout=0.0, watchdog_short_challenge_k=3)
+    old_pubkey = s._pubkey
+    for _ in range(2):                           # only 2 < k
+        s.feed(_craft_short_challenge_frame(), channel=1, now=5.0)
+    s.tick(now=6.0)
+    assert s._pubkey == old_pubkey
+
+
+def test_short_challenge_tally_resets_on_decoded_telemetry():
+    # Decoded telemetry on a live session proves the link recovered — clear any
+    # short-0x42 tally so a later isolated resume attempt doesn't trip the watchdog.
+    s = _active_data_session()                       # ACTIVE, session_key set
+    s._short_challenge_count = 2
+    s.feed(_craft_data_frame(s.session_key), channel=1, now=6.0)
+    assert s._short_challenge_count == 0
 
 
 def _frame_with_payload(payload):

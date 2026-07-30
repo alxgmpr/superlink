@@ -42,7 +42,10 @@ class BridgeRuntime:
         s = DeviceSession(record, gw_mac=self.config.gw_mac,
                           pairing_key=self.config.pairing_key,
                           profiles=self.profiles,
-                          link_lost_timeout=self.config.link_lost_timeout)
+                          link_lost_timeout=self.config.link_lost_timeout,
+                          watchdog_timeout=self.config.watchdog_timeout,
+                          watchdog_short_challenge_k=(
+                              self.config.watchdog_short_challenge_k))
         self._sessions[record.mac] = s
         return s
 

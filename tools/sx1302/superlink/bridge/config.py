@@ -36,6 +36,8 @@ class RuntimeConfig:
     mqtt: "MqttConfig | None" = None
     control_socket: str | None = None
     link_lost_timeout: float = 60.0
+    watchdog_timeout: float = 150.0
+    watchdog_short_challenge_k: int = 3
 
     @classmethod
     def load(cls, path: str) -> "RuntimeConfig":
@@ -90,6 +92,9 @@ class RuntimeConfig:
             mqtt=mqtt,
             control_socket=control_socket,
             link_lost_timeout=float(doc.get("link_lost_timeout", 60.0)),
+            watchdog_timeout=float(doc.get("watchdog_timeout", 150.0)),
+            watchdog_short_challenge_k=int(
+                doc.get("watchdog_short_challenge_k", 3)),
         )
 
     def is_allowed(self, mac: bytes) -> bool:
