@@ -17,6 +17,16 @@ def _cfg(adopt=ADOPT_ALL, delay=1_000_000, spacing=500_000):
                          downlink_delay_us=delay, burst_spacing_us=spacing)
 
 
+def test_session_factory_plumbs_watchdog_config():
+    from superlink.bridge.store import DeviceRecord
+    cfg = RuntimeConfig(gw_mac=GW, pairing_key=DEFAULT_PAIRING_KEY, adopt=ADOPT_ALL,
+                        watchdog_timeout=200.0, watchdog_short_challenge_k=5)
+    rt = BridgeRuntime(cfg, FakeHal(), store=InMemoryDeviceStore())
+    s = rt._session_factory(DeviceRecord(mac=SENSOR_MAC))
+    assert s.watchdog_timeout == 200.0
+    assert s.watchdog_short_challenge_k == 5
+
+
 def test_tick_if_due_calls_maybe_tick_at_most_once_per_interval():
     rt = BridgeRuntime(_cfg(), FakeHal(), store=InMemoryDeviceStore())
     calls = []

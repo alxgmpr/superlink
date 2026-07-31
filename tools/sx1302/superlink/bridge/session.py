@@ -110,6 +110,8 @@ class DeviceSession:
                  beacon_interval: float = 240.0,
                  beacon_enabled: bool = False,
                  link_lost_timeout: float = 60.0,
+                 watchdog_timeout: float = 150.0,
+                 watchdog_short_challenge_k: int = 3,
                  reconnect_storm_k: int = 3,
                  reconnect_storm_window: float = 30.0,
                  reconnect_backoff: float = 60.0,
@@ -126,6 +128,21 @@ class DeviceSession:
         # beacon on 927.6 is a speculative frame we don't want on air.
         self.beacon_enabled = beacon_enabled
         self.link_lost_timeout = link_lost_timeout
+        # Watchdog: safety-net for a stuck link that link-lost's drop-to-BEACONING
+        # hasn't recovered (sensor spamming 2-byte "resume" 0x42s the bridge can't
+        # complete, telemetry silent). It re-arms the session to a pristine
+        # BEACONING state with a FRESH DH keypair — the same clean state a bridge
+        # restart produces — so the bridge is always ready to answer the sensor's
+        # next full 0x40. NOTE (HW 2026-07-30): recovery is ultimately sensor-driven
+        # — nothing the bridge does forces a silent sensor to re-discover; the
+        # re-arm only guarantees the bridge is in the right state when it does. It
+        # fires when telemetry has been silent for `watchdog_timeout` (well past
+        # link_lost_timeout, so it only escalates after normal recovery already
+        # failed) OR after `watchdog_short_challenge_k` short-0x42 rejections pile
+        # up (the stuck-state signature). 0 disables the respective trigger.
+        self.watchdog_timeout = watchdog_timeout
+        self.watchdog_short_challenge_k = watchdog_short_challenge_k
+        self._short_challenge_count = 0
         # Wall-clock of the last DATA (0x54/0x44) frame — the link-liveness
         # heartbeat. 0x40 discoveries deliberately do NOT refresh this, so a
         # sensor that switches from telemetry to discovery-spam still times out
@@ -319,7 +336,52 @@ class DeviceSession:
                             "%.0fs before answering discovery again",
                             self.reconnect_storm_k, self.reconnect_storm_window,
                             self.reconnect_backoff)
+
+        # Watchdog: the stuck link that link-lost's re-handshake can't recover.
+        # Only meaningful for an adopted (operational) session — an unadopted
+        # session simply waiting for its first discovery has no session to recover.
+        if self._adopted:
+            silent = now - self._last_data_rx
+            deep_silence = (self.watchdog_timeout > 0
+                            and silent >= self.watchdog_timeout)
+            short_storm = (self.watchdog_short_challenge_k > 0
+                           and self._short_challenge_count
+                           >= self.watchdog_short_challenge_k)
+            if deep_silence or short_storm:
+                reason = ("deep silence %.0fs" % silent if deep_silence
+                          else "%d short 0x42 rejections"
+                               % self._short_challenge_count)
+                log.warning("WATCHDOG re-arm (%s) — rebuilding session like a "
+                            "clean restart (fresh DH keypair, back to BEACONING)",
+                            reason)
+                self._rearm(now)
+                if self.sensor_mac:
+                    events.append(DeviceStateEvent(mac=self.sensor_mac,
+                                                   state="lost"))
         return frames, events
+
+    def _rearm(self, now: float) -> None:
+        """Reset the session to a pristine BEACONING state, as a clean restart
+        would: a fresh DH keypair and cleared volatile handshake state, while
+        keeping adoption, the rotated addDevice keys, kdf/transport context, and
+        the learned prop_sizes. This makes the bridge ready to answer the sensor's
+        next full 0x40; it does NOT force a silent sensor to reconnect (recovery is
+        sensor-driven — see the watchdog note in __init__)."""
+        self._privkey, self._pubkey = generate_keypair()
+        self._state = State.BEACONING
+        self.session_key = None
+        self._remote_pubkey = None
+        self._last_data_rx = now
+        self._last_beacon_time = now
+        self._short_challenge_count = 0
+        self._lost_times = []
+        self._backoff_until = 0.0
+        # Drop mid-handshake ephemeral/counter state so the fresh handshake
+        # starts clean (mirrors a from-record rebuild).
+        for attr in ("_mgmt_counter", "_post_pair_tx_seq_hi",
+                     "_post_pair_tx_seq_lo", "_post_pair_counter"):
+            if hasattr(self, attr):
+                delattr(self, attr)
 
     def to_record(self) -> DeviceRecord:
         """Snapshot the session's persistent state into a DeviceRecord."""
@@ -350,9 +412,11 @@ class DeviceSession:
             return None, [], []
 
         self._now = now
-        # Telemetry is the link-liveness heartbeat; discovery/mgmt frames are not.
-        if frame.dctrl in (0x54, 0x44):
-            self._last_data_rx = now
+        # Link liveness is refreshed by DECODED telemetry only — see
+        # _handle_active's data branch. Bumping on the raw 0x54/0x44 dctrl (before
+        # decryption) let a drifted/dead session that still emits undecryptable
+        # 0x54s look alive forever, so it never timed out to BEACONING to answer
+        # the sensor's reconnect: the "stale until a manual restart" trap.
         was_active = self._state == State.ACTIVE
 
         if self._state == State.ACTIVE:
@@ -417,8 +481,28 @@ class DeviceSession:
 
     def _sustain(self, frame: SuperLinkFrame, channel: int
                  ) -> OutgoingFrame | None:
-        """Optional DL follow-up on 0x44/0x54 windows (base: none)."""
-        return None
+        """Push a queued command on a telemetry (0x54/0x44) window.
+
+        The real controller delivers config/commands in-session as DL 0x74 right
+        after a UL frame (ground truth: bridge_adopt_fresh_pass2 — three
+        PROPERTY_SETs pushed on 0x74 right after DEVICE_INFO, then the door report
+        flows). It does NOT wait for the sensor's rare 0x53 reconnect poll. Draining
+        `_pending_bodies` here too makes command delivery ~telemetry-cadence
+        (seconds) instead of once-per-reconnect. Only fires when a body is queued,
+        so an idle session emits no spurious DL.
+        """
+        if not (self._adopted and 1 <= channel <= 8):
+            return None
+        body = self._next_dl_body()
+        if body is None:
+            return None
+        from ..hal import DL_FREQ_HZ
+        dl_freq = DL_FREQ_HZ[channel - 1]
+        tx = self._build_command(frame.mac, body, frame.seq_hi)
+        log.info("cmd (push on 0x%02X window) -> %s seq=%02X body=%s on %.1f MHz",
+                 frame.dctrl, format_mac(frame.mac), frame.seq_hi, body.hex(),
+                 dl_freq / 1e6)
+        return OutgoingFrame(data=tx, freq_hz=dl_freq, channel=channel)
 
     def _on_commit(self) -> None:
         """Called when the sensor's adoption commit is observed (base: no-op)."""
@@ -496,6 +580,10 @@ class DeviceSession:
             if scan_c is not None:
                 frame = decrypt_frame(frame, self.session_key,
                                       ul_counter_offset=frame.seq_hi - scan_c)
+                # DECODED telemetry: refresh liveness and clear the short-0x42
+                # tally — the link is provably healthy right now.
+                self._last_data_rx = self._now
+                self._short_challenge_count = 0
                 log.info("data counter=%d (seq=%02X.%02X)",
                          scan_c, frame.seq_hi, frame.seq_lo)
             else:
@@ -508,6 +596,15 @@ class DeviceSession:
                  frame.seq_hi, frame.seq_lo,
                  frame.interpretation or
                  (frame.payload.hex() if frame.payload else "?"))
+        # Ground-truth trace of the FULL decrypted app-message body (msgId + raw
+        # hex) for every decoded frame, so on-change events (door/button) that
+        # arrive as a non-PROPERTY_REPORT message — invisible to the PropertyEvent
+        # path — are still captured for RE. decoder.py's "ext_report" line above is
+        # a stale heuristic; this is the real contiguous body.
+        if frame.payload:
+            log.debug("  APPBODY dctrl=0x%02X msgId=%d len=%d full=%s",
+                      frame.dctrl, frame.payload[0], len(frame.payload),
+                      frame.payload.hex())
 
         # Application-layer ADOPT_RESPONSE body inspection. Sensor wraps the
         # 66-byte ADOPT_RESPONSE inside a 0x54 (data UL) frame after we send
@@ -788,8 +885,15 @@ class DeviceSession:
                       len(frame.payload) if frame.payload else 0,
                       frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
-                log.warning("ConnectionChallenge too short: %d bytes",
-                            len(frame.payload) if frame.payload else 0)
+                # The 2-byte "resume" 0x42 the bridge can't complete. Count it —
+                # enough of these in a row means the sensor is stuck on the resume
+                # path and the watchdog should re-arm (tick() acts on the count).
+                self._short_challenge_count += 1
+                log.warning("ConnectionChallenge too short: %d bytes (short-0x42 "
+                            "tally %d/%d)",
+                            len(frame.payload) if frame.payload else 0,
+                            self._short_challenge_count,
+                            self.watchdog_short_challenge_k)
                 return frame, [], events
 
             # 0x42 ConnectionChallenge plaintext layout (2026-04-21 keyhook
@@ -817,6 +921,7 @@ class DeviceSession:
             )
             self._ul_counter_offset = frame.seq_hi
             self._state = State.ACTIVE
+            self._short_challenge_count = 0   # handshake completed; clear the tally
             log.info("Session key derived (kdf_ctx=%s...)",
                      self._kdf_context[:8].hex())
             # Signal that the link is up so downstream sinks (MQTT) republish
