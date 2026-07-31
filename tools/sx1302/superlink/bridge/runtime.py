@@ -11,7 +11,7 @@ from .config import RuntimeConfig
 from .core import BridgeCore, OutgoingFrame
 from .events import (
     Event, DeviceDiscovered, DeviceStateEvent, PropertyEvent, DeviceInfoEvent,
-    AdoptDevice,
+    AdoptDevice, SetPropertyRaw,
 )
 from .profiles import ProfileRegistry
 from .session import DeviceSession
@@ -64,6 +64,17 @@ class BridgeRuntime:
             if session is not None:
                 self.store.save(session.to_record())
                 log.info("persisted adopted device %s", event.mac.hex())
+                # Replay the controller's post-adoption config (door/tamper
+                # reporting enable) so it persists across restarts/re-pairs with
+                # no manual step. Data-driven per device type (profiles.yaml);
+                # device type is unknown at commit -> the `default` list applies.
+                dtype = getattr(session, "device_type", None)
+                for pid, ch, raw in self.profiles.post_adoption(dtype):
+                    self.core.submit(SetPropertyRaw(mac=event.mac,
+                                                    property_id=pid,
+                                                    channel=ch, raw=raw))
+                    log.info("post-adoption config -> %s: SET id%d ch%d = %s",
+                             event.mac.hex(), pid, ch, raw.hex())
         elif isinstance(event, DeviceStateEvent) and event.state == "discovered":
             # A previously-adopted device re-advertised as unadopted (factory
             # reset). Drop the stale record so the fresh pair re-adopts cleanly.

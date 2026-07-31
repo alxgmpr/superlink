@@ -19,7 +19,7 @@ properties:
   15: { name: ENTRY_DETECTED,   type: bool }
   16: { name: ENTRY_CONFIG }
   17: { name: FIRMWARE_VERSION }
-  19: { name: BUTTON_PRESSED,   type: bool }
+  19: { name: BUTTON_PRESSED,   type: u32, edge: increase }
   20: { name: TAMPER_DETECTED,  type: bool }
   21: { name: TAMPER_CONFIG }
   22: { name: TAMPER_CLEAR }
@@ -44,3 +44,14 @@ properties:
   41: { name: BUTTON_DOUBLE_PRESSED, type: bool }
   42: { name: BUTTON_CONFIG }
 device_types: {}   # optional per-deviceType overrides, same entry shape
+
+# Config the bridge auto-pushes right after a sensor commits adoption, replaying
+# what the real controller does post-adoption (ground truth bridge_adopt_fresh_pass2:
+# REPORT_INTERVAL(13)=300, TAMPER_CONFIG(21)=1, ENTRY_CONFIG(16)=1). `raw` is the
+# exact PROPERTY_SET value on the wire (big-endian hex). `default` applies when the
+# device type is unknown (fresh commit); add int deviceType keys for per-type config.
+post_adoption:
+  default:
+    - { id: 13, channel: 0, raw: "012c" }   # REPORT_INTERVAL = 300 s
+    - { id: 21, channel: 0, raw: "0001" }   # TAMPER_CONFIG   = enable
+    - { id: 16, channel: 0, raw: "0001" }   # ENTRY_CONFIG    = enable

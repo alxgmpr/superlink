@@ -9,16 +9,19 @@ _DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "profiles", "superlink.y
 
 
 class ProfileRegistry:
-    def __init__(self, properties: dict, device_types: dict):
+    def __init__(self, properties: dict, device_types: dict,
+                 post_adoption: dict | None = None):
         self._props = {int(k): v for k, v in properties.items()}
         self._by_name = {v["name"]: int(k) for k, v in self._props.items()}
         self._device_types = device_types or {}
+        self._post_adoption = post_adoption or {}
 
     @classmethod
     def load(cls, path: str | None = None) -> "ProfileRegistry":
         with open(path or _DEFAULT_PATH) as f:
             doc = yaml.safe_load(f)
-        return cls(doc.get("properties", {}), doc.get("device_types", {}))
+        return cls(doc.get("properties", {}), doc.get("device_types", {}),
+                   doc.get("post_adoption", {}))
 
     def _entry(self, property_id: int, device_type: int | None):
         if device_type is not None:
@@ -35,6 +38,30 @@ class ProfileRegistry:
     def name(self, property_id: int) -> str:
         entry = self._props.get(property_id)
         return entry["name"] if entry else f"UNKNOWN_{property_id}"
+
+    def edge(self, property_id: int, device_type: int | None = None):
+        """Edge-emit mode for a property (e.g. "increase"), or None.
+
+        Marks a property (like BUTTON_PRESSED, a monotonic last-press uptime)
+        whose consumers want a discrete event each time its value advances,
+        rather than the raw level.
+        """
+        entry = self._entry(property_id, device_type)
+        return entry.get("edge") if entry else None
+
+    def post_adoption(self, device_type: int | None = None
+                      ) -> list[tuple[int, int, bytes]]:
+        """Config to auto-push once a device commits adoption.
+
+        Returns a list of (property_id, channel, raw_value_bytes). Uses the
+        device-type-specific list when present, else `default` (the fresh-commit
+        case, where the device type is not yet known).
+        """
+        entries = self._post_adoption.get(device_type)
+        if entries is None:
+            entries = self._post_adoption.get("default", [])
+        return [(e["id"], e.get("channel", 0), bytes.fromhex(e["raw"]))
+                for e in entries]
 
     def decode(self, property_id: int, raw: bytes,
                device_type: int | None = None):

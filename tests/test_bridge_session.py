@@ -270,6 +270,27 @@ def test_queued_command_pushed_on_telemetry_window():
     assert s._pending_bodies == [], "the body must be drained once sent"
 
 
+def _button_report_frame(session_key, uptime, seq_hi=0x10, counter=5):
+    # PROPERTY_REPORT(12) tag0, BUTTON_PRESSED(19) ch0 = u32 uptime.
+    payload = bytes([12, 0, 19, 0]) + uptime.to_bytes(4, "big")
+    return _craft_data_frame(session_key, seq_hi=seq_hi, counter=counter,
+                             payload=payload)
+
+
+def test_button_press_edge_surfaces_through_session():
+    from superlink.bridge.events import ButtonPressed
+    s = _active_data_session()
+    s._prop_sizes = {19: 4}
+    # Baseline sighting: no press yet.
+    _, evs = s.feed(_button_report_frame(s.session_key, 1000, seq_hi=0x10,
+                                         counter=5), channel=1, now=6.0)
+    assert not any(isinstance(e, ButtonPressed) for e in evs)
+    # Uptime advances -> a press edge surfaces.
+    _, evs = s.feed(_button_report_frame(s.session_key, 1500, seq_hi=0x11,
+                                         counter=6), channel=1, now=7.0)
+    assert any(isinstance(e, ButtonPressed) and e.property_id == 19 for e in evs)
+
+
 def test_no_command_pushed_without_queue():
     # No queued body -> a telemetry frame must NOT emit a spurious DL command.
     s = _active_data_session()

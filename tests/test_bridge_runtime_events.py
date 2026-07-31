@@ -54,6 +54,26 @@ def test_adopted_state_persists_record():
     assert len(saved) == 1 and saved[0].mac == MAC
 
 
+def test_adopted_state_auto_pushes_post_adoption_config():
+    # On commit, the bridge must replay the controller's post-adoption config
+    # (REPORT_INTERVAL=300, TAMPER_CONFIG=1, ENTRY_CONFIG=1) so door/tamper
+    # reporting persists across restarts/re-pairs with no manual step.
+    from superlink.bridge.events import SetPropertyRaw
+    store = InMemoryDeviceStore()
+    rt = _runtime({MAC}, store=store)
+    rt._sessions[MAC] = _FakeSession(MAC)
+    submitted = []
+    rt.core.submit = lambda a: submitted.append(a)
+    rt._on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    raws = [(a.property_id, a.channel, a.raw) for a in submitted
+            if isinstance(a, SetPropertyRaw)]
+    assert raws == [
+        (13, 0, b"\x01\x2c"),
+        (21, 0, b"\x00\x01"),
+        (16, 0, b"\x00\x01"),
+    ]
+
+
 def test_device_info_event_persists_prop_sizes():
     # prop_sizes is learned only from a DEVICE_INFO_REPORT, which arrives well
     # after the initial adopt-time save. The runtime must re-persist the record

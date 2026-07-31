@@ -8,7 +8,6 @@ ENTITY_MAP: dict[str, dict] = {
     "TAMPER_DETECTED":      {"component": "binary_sensor", "device_class": "tamper"},
     "GLASS_BREAK_DETECTED": {"component": "binary_sensor", "device_class": "sound"},
     "SMOKE_STATUS":         {"component": "binary_sensor", "device_class": "smoke"},
-    "BUTTON_PRESSED":       {"component": "binary_sensor"},
     "TEMPERATURE":          {"component": "sensor", "device_class": "temperature"},
     "HUMIDITY":             {"component": "sensor", "device_class": "humidity"},
     "BATTERY":              {"component": "sensor", "device_class": "battery"},
@@ -25,6 +24,13 @@ COMMAND_BUTTONS: dict[str, dict] = {
     "reboot":  {"name": "Reboot", "device_class": "restart", "icon": "mdi:restart"},
     "refresh": {"name": "Refresh info", "icon": "mdi:refresh"},
 }
+
+
+# The physical button surfaces as a momentary binary_sensor: the sensor only
+# ever reports "pressed" (a last-press uptime that advances), so HA auto-resets
+# it to off after `off_delay` seconds rather than waiting for an off report.
+PRESS_ENTITY_NAME = "BUTTON"
+PRESS_ENTITY: dict = {"component": "binary_sensor", "off_delay": 2}
 
 
 def entity_for(name: str) -> dict | None:
@@ -88,6 +94,8 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
         payload["device_class"] = entity["device_class"]
     if "icon" in entity:
         payload["icon"] = entity["icon"]
+    if "off_delay" in entity:
+        payload["off_delay"] = entity["off_delay"]
     if unit:
         payload["unit_of_measurement"] = unit
     if component in ("binary_sensor", "switch"):

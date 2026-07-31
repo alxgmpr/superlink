@@ -81,6 +81,24 @@ def test_start_sets_lwt_and_online():
     assert "superlink/adopt" in client.subscriptions
 
 
+# --- physical button press (id19 edge) ---
+
+def test_button_pressed_event_publishes_momentary_on():
+    from superlink.bridge.events import ButtonPressed
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(ButtonPressed(mac=MAC, property_id=19,
+                                  name="BUTTON_PRESSED", value=1500))
+    # Momentary press: publishes ON to a dedicated topic; HA auto-resets via
+    # the entity's off_delay (a physical button has no "off" report).
+    assert client.find(f"superlink/{MH}/BUTTON") == "ON"
+    cfg = client.find(f"homeassistant/binary_sensor/{MH}_BUTTON/config")
+    assert cfg is not None
+    payload = json.loads(cfg)
+    assert payload["off_delay"] > 0
+    assert payload["state_topic"] == f"superlink/{MH}/BUTTON"
+
+
 # --- command buttons: LOCATE / REBOOT / refresh ---
 
 def test_start_subscribes_button_press_topic():

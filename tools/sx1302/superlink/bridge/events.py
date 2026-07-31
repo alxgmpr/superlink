@@ -33,6 +33,16 @@ class PropertyEvent(Event):
 
 
 @dataclass(frozen=True)
+class ButtonPressed(Event):
+    """A discrete button press, derived from a monotonic last-press-uptime
+    property (id19) advancing. Momentary: fires once per detected edge."""
+    mac: bytes
+    property_id: int
+    name: str
+    value: int
+
+
+@dataclass(frozen=True)
 class DeviceInfoEvent(Event):
     mac: bytes
     device_type: int

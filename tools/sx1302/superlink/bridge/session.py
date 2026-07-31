@@ -174,6 +174,11 @@ class DeviceSession:
         # Property value-size map + known device type used to decode app
         # messages into typed events. Populated as we learn them.
         self._prop_sizes: dict | None = None
+        # Last-seen value per edge-emit property (e.g. BUTTON_PRESSED's u32
+        # last-press uptime) so _observe can fire a discrete press only when the
+        # value advances. Volatile: the first report after (re)start just sets
+        # the baseline, so a reconnect never phantom-fires.
+        self._button_last: dict = {}
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -254,6 +259,10 @@ class DeviceSession:
     @property
     def mac(self) -> bytes | None:
         return self.sensor_mac
+
+    @property
+    def device_type(self) -> int | None:
+        return self._device_type
 
     # ------------------------------------------------------------- lifecycle
     def start(self, now: float = 0.0):
@@ -442,7 +451,8 @@ class DeviceSession:
         try:
             events = events_from_app_message(
                 frame.mac, frame.payload, self.profiles,
-                sizes=self._prop_sizes, device_type=self._device_type)
+                sizes=self._prop_sizes, device_type=self._device_type,
+                last_values=self._button_last)
         except Exception as exc:  # noqa: BLE001 - decode is best-effort
             log.debug("app-message decode failed: %s", exc)
             return []

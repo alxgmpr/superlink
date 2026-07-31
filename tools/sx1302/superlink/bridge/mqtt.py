@@ -7,10 +7,11 @@ import logging
 from .config import MqttConfig
 from .entities import (
     entity_for, discovery_config, button_discovery_config, COMMAND_BUTTONS,
+    PRESS_ENTITY, PRESS_ENTITY_NAME,
 )
 from .events import (
     Event, PropertyEvent, DeviceInfoEvent, DeviceDiscovered, DeviceStateEvent,
-    SetProperty, AdoptDevice, Locate, Reboot, RequestDeviceInfo,
+    ButtonPressed, SetProperty, AdoptDevice, Locate, Reboot, RequestDeviceInfo,
 )
 
 # Command-button name -> factory building the Action from a device MAC.
@@ -67,6 +68,8 @@ class MqttBridge:
     def on_event(self, event: Event) -> None:
         if isinstance(event, PropertyEvent):
             self._publish_property(event)
+        elif isinstance(event, ButtonPressed):
+            self._publish_button_press(event)
         elif isinstance(event, DeviceDiscovered):
             self.client.publish(f"{self.base}/discovered/{event.mac.hex()}",
                                 json.dumps({"channel": event.channel,
@@ -88,6 +91,19 @@ class MqttBridge:
             topic, payload = button_discovery_config(
                 mac, name, self.base, self.prefix)
             self.client.publish(topic, json.dumps(payload), retain=True)
+
+    def _publish_button_press(self, ev: ButtonPressed) -> None:
+        """Publish a momentary press: ON to the BUTTON topic (HA off_delay
+        auto-resets it). Discovery is sent once per device."""
+        machex = ev.mac.hex()
+        key = f"{machex}_{PRESS_ENTITY_NAME}"
+        if key not in self._discovery_done:
+            topic, payload = discovery_config(
+                ev.mac, PRESS_ENTITY_NAME, PRESS_ENTITY, self.base, self.prefix,
+                unit=None)
+            self.client.publish(topic, json.dumps(payload), retain=True)
+            self._discovery_done.add(key)
+        self.client.publish(f"{self.base}/{machex}/{PRESS_ENTITY_NAME}", "ON")
 
     def _publish_property(self, ev: PropertyEvent) -> None:
         machex = ev.mac.hex()

@@ -25,6 +25,33 @@ def test_property_report_maps_to_events(reg):
     assert evs[1].name == "BATTERY" and evs[1].value == 50 and evs[1].unit == "%"
 
 
+def test_button_press_emits_edge_event_on_increase(reg):
+    from superlink.bridge.events import ButtonPressed
+    sizes = {19: 4}
+    last: dict = {}
+
+    def report(uptime):
+        body = bytes([12, 0]) + bytes([19, 0]) + uptime.to_bytes(4, "big")
+        return events_from_app_message(MAC, body, reg, sizes=sizes,
+                                       last_values=last)
+
+    # First sighting establishes the baseline — a PropertyEvent, but NO press
+    # (the sensor reports the last-press uptime continuously; only a *new* press
+    # advances it, so the first value we ever see is not itself an edge).
+    evs = report(1000)
+    assert [type(e) for e in evs] == [PropertyEvent]
+    assert evs[0].name == "BUTTON_PRESSED" and evs[0].value == 1000
+
+    # Same value again: still no press.
+    assert [type(e) for e in report(1000)] == [PropertyEvent]
+
+    # Uptime advances: a press happened -> ButtonPressed alongside the report.
+    evs = report(1500)
+    assert [type(e) for e in evs] == [PropertyEvent, ButtonPressed]
+    assert evs[1].mac == MAC and evs[1].property_id == 19
+    assert evs[1].name == "BUTTON_PRESSED"
+
+
 def test_unknown_message_is_raw(reg):
     body = bytes([200, 7, 0xaa, 0xbb])
     evs = events_from_app_message(MAC, body, reg)
