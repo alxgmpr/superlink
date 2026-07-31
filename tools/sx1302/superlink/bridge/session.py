@@ -481,8 +481,28 @@ class DeviceSession:
 
     def _sustain(self, frame: SuperLinkFrame, channel: int
                  ) -> OutgoingFrame | None:
-        """Optional DL follow-up on 0x44/0x54 windows (base: none)."""
-        return None
+        """Push a queued command on a telemetry (0x54/0x44) window.
+
+        The real controller delivers config/commands in-session as DL 0x74 right
+        after a UL frame (ground truth: bridge_adopt_fresh_pass2 — three
+        PROPERTY_SETs pushed on 0x74 right after DEVICE_INFO, then the door report
+        flows). It does NOT wait for the sensor's rare 0x53 reconnect poll. Draining
+        `_pending_bodies` here too makes command delivery ~telemetry-cadence
+        (seconds) instead of once-per-reconnect. Only fires when a body is queued,
+        so an idle session emits no spurious DL.
+        """
+        if not (self._adopted and 1 <= channel <= 8):
+            return None
+        body = self._next_dl_body()
+        if body is None:
+            return None
+        from ..hal import DL_FREQ_HZ
+        dl_freq = DL_FREQ_HZ[channel - 1]
+        tx = self._build_command(frame.mac, body, frame.seq_hi)
+        log.info("cmd (push on 0x%02X window) -> %s seq=%02X body=%s on %.1f MHz",
+                 frame.dctrl, format_mac(frame.mac), frame.seq_hi, body.hex(),
+                 dl_freq / 1e6)
+        return OutgoingFrame(data=tx, freq_hz=dl_freq, channel=channel)
 
     def _on_commit(self) -> None:
         """Called when the sensor's adoption commit is observed (base: no-op)."""
@@ -576,6 +596,15 @@ class DeviceSession:
                  frame.seq_hi, frame.seq_lo,
                  frame.interpretation or
                  (frame.payload.hex() if frame.payload else "?"))
+        # Ground-truth trace of the FULL decrypted app-message body (msgId + raw
+        # hex) for every decoded frame, so on-change events (door/button) that
+        # arrive as a non-PROPERTY_REPORT message — invisible to the PropertyEvent
+        # path — are still captured for RE. decoder.py's "ext_report" line above is
+        # a stale heuristic; this is the real contiguous body.
+        if frame.payload:
+            log.debug("  APPBODY dctrl=0x%02X msgId=%d len=%d full=%s",
+                      frame.dctrl, frame.payload[0], len(frame.payload),
+                      frame.payload.hex())
 
         # Application-layer ADOPT_RESPONSE body inspection. Sensor wraps the
         # 66-byte ADOPT_RESPONSE inside a 0x54 (data UL) frame after we send

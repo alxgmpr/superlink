@@ -257,6 +257,27 @@ def test_data_frame_refreshes_liveness():
     assert s._state == State.ACTIVE                    # still healthy
 
 
+def test_queued_command_pushed_on_telemetry_window():
+    # The real controller delivers config/commands in-session as DL 0x74 right
+    # after a UL frame, not gated on the sensor's rare 0x53 reconnect poll. A
+    # queued body must go out on a telemetry (0x54) window too.
+    s = _active_data_session()
+    s._adopted = True
+    s.queue_body(b"\x0e\x01\x10\x00\x01")               # PROPERTY_SET ENTRY_CONFIG=1
+    frames, _ = s.feed(_craft_data_frame(s.session_key), channel=3, now=6.0)
+    assert any(isinstance(f, OutgoingFrame) for f in frames), \
+        "a queued command must be pushed on a 0x54 telemetry window"
+    assert s._pending_bodies == [], "the body must be drained once sent"
+
+
+def test_no_command_pushed_without_queue():
+    # No queued body -> a telemetry frame must NOT emit a spurious DL command.
+    s = _active_data_session()
+    s._adopted = True
+    frames, _ = s.feed(_craft_data_frame(s.session_key), channel=3, now=6.0)
+    assert not any(isinstance(f, OutgoingFrame) for f in frames)
+
+
 def test_undecodable_data_does_not_refresh_liveness():
     # The stale-until-manual-restart trap: a drifted/dead session where the sensor
     # still emits 0x54s that no longer decrypt. Raw dctrl must NOT count as
