@@ -35,8 +35,14 @@ class RuntimeConfig:
     csv_path: str | None = None
     mqtt: "MqttConfig | None" = None
     control_socket: str | None = None
-    link_lost_timeout: float = 60.0
-    watchdog_timeout: float = 150.0
+    # Liveness timeouts must exceed the baked REPORT_INTERVAL (300s): an idle-but-
+    # alive sensor reports every 300s, so shorter timeouts declare the link dead
+    # between reports and flap HA unavailable. These clear 2x the interval
+    # (tolerating one missed report). The watchdog's short-0x42-storm trigger
+    # (watchdog_short_challenge_k) still catches a genuinely stuck link fast,
+    # independent of this time threshold.
+    link_lost_timeout: float = 660.0
+    watchdog_timeout: float = 900.0
     watchdog_short_challenge_k: int = 3
 
     @classmethod

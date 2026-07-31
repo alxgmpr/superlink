@@ -23,14 +23,15 @@ COMMAND_BUTTONS: dict[str, dict] = {
     "locate":  {"name": "Locate", "icon": "mdi:map-marker-radius"},
     "reboot":  {"name": "Reboot", "device_class": "restart", "icon": "mdi:restart"},
     "refresh": {"name": "Refresh info", "icon": "mdi:refresh"},
+    "clear_tamper": {"name": "Clear tamper", "icon": "mdi:shield-refresh"},
 }
 
 
-# The physical button surfaces as a momentary binary_sensor: the sensor only
-# ever reports "pressed" (a last-press uptime that advances), so HA auto-resets
-# it to off after `off_delay` seconds rather than waiting for an off report.
+# The physical button has no discrete "off" — the sensor only ever reports a
+# press (a last-press uptime that advances). It surfaces as an HA `event` entity
+# (a press trigger HA timestamps), not an on/off binary_sensor.
 PRESS_ENTITY_NAME = "BUTTON"
-PRESS_ENTITY: dict = {"component": "binary_sensor", "off_delay": 2}
+PRESS_ENTITY: dict = {"component": "event", "event_types": ["press"]}
 
 
 def entity_for(name: str) -> dict | None:
@@ -94,8 +95,6 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
         payload["device_class"] = entity["device_class"]
     if "icon" in entity:
         payload["icon"] = entity["icon"]
-    if "off_delay" in entity:
-        payload["off_delay"] = entity["off_delay"]
     if unit:
         payload["unit_of_measurement"] = unit
     if component in ("binary_sensor", "switch"):
@@ -103,4 +102,6 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
         payload["payload_off"] = "OFF"
     if component == "switch":
         payload["command_topic"] = f"{state_topic}/set"
+    if component == "event":
+        payload["event_types"] = entity.get("event_types", [])
     return config_topic, payload

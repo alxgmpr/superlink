@@ -179,6 +179,11 @@ class DeviceSession:
         # value advances. Volatile: the first report after (re)start just sets
         # the baseline, so a reconnect never phantom-fires.
         self._button_last: dict = {}
+        # Gateway per-packet RSSI/SNR for the frame currently being fed (set by
+        # feed(); None on the legacy path). Emitted as a LinkSignal on decoded
+        # telemetry so HA gets a real-dBm signal instead of the opaque id2.
+        self._rx_rssi: float | None = None
+        self._rx_snr: float | None = None
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -300,9 +305,16 @@ class DeviceSession:
         """Queue an app-message body for the next DL command window."""
         self._pending_bodies.append(body)
 
-    def feed(self, frame: SuperLinkFrame | None, channel: int, now: float
+    def feed(self, frame: SuperLinkFrame | None, channel: int, now: float,
+             rssi: float | None = None, snr: float | None = None
              ) -> tuple[list[OutgoingFrame], list]:
-        """Process a parsed frame; return (outgoing frames, events)."""
+        """Process a parsed frame; return (outgoing frames, events).
+
+        rssi/snr are the gateway's per-packet measurements (dBm / dB); when
+        present, a decoded telemetry frame emits a LinkSignal event.
+        """
+        self._rx_rssi = rssi
+        self._rx_snr = snr
         _decoded, frames, events = self._dispatch(frame, channel, now)
         return frames, events
 
@@ -722,6 +734,14 @@ class DeviceSession:
         # Observe the decrypted app message as typed events (adopted only). This
         # is where the old code fed the RE sweep via _ingest_app_report.
         events += self._observe(frame, channel)
+
+        # Gateway-measured link signal (real dBm/dB) for this decoded telemetry
+        # frame. Only for data frames, and only when feed() supplied RSSI.
+        if self._rx_rssi is not None and frame.dctrl in (0x54, 0x44):
+            from .events import LinkSignal
+            events.append(LinkSignal(mac=frame.mac, rssi_dbm=self._rx_rssi,
+                                     snr=self._rx_snr if self._rx_snr is not None
+                                     else 0.0))
 
         # Post-adoption: the sensor's 0x53 mgmt poll is its COMMAND WINDOW — the
         # only point it listens for and acts on a request. Drain a queued body.

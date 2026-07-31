@@ -11,7 +11,8 @@ from .entities import (
 )
 from .events import (
     Event, PropertyEvent, DeviceInfoEvent, DeviceDiscovered, DeviceStateEvent,
-    ButtonPressed, SetProperty, AdoptDevice, Locate, Reboot, RequestDeviceInfo,
+    ButtonPressed, LinkSignal, SetProperty, SetPropertyRaw, AdoptDevice, Locate,
+    Reboot, RequestDeviceInfo,
 )
 
 # Command-button name -> factory building the Action from a device MAC.
@@ -19,6 +20,10 @@ _BUTTON_ACTIONS = {
     "locate": lambda mac: Locate(mac=mac),
     "reboot": lambda mac: Reboot(mac=mac),
     "refresh": lambda mac: RequestDeviceInfo(mac=mac),
+    # "Clear tamper" = PROPERTY_SET TAMPER_CLEAR(id22)=1 (mirrors the UniFi
+    # dashboard action). Verbatim raw so it needs no profile type for id22.
+    "clear_tamper": lambda mac: SetPropertyRaw(mac=mac, property_id=22,
+                                               channel=0, raw=b"\x01"),
 }
 
 log = logging.getLogger("superlink.mqtt")
@@ -70,6 +75,8 @@ class MqttBridge:
             self._publish_property(event)
         elif isinstance(event, ButtonPressed):
             self._publish_button_press(event)
+        elif isinstance(event, LinkSignal):
+            self._publish_link_signal(event)
         elif isinstance(event, DeviceDiscovered):
             self.client.publish(f"{self.base}/discovered/{event.mac.hex()}",
                                 json.dumps({"channel": event.channel,
@@ -92,9 +99,23 @@ class MqttBridge:
                 mac, name, self.base, self.prefix)
             self.client.publish(topic, json.dumps(payload), retain=True)
 
+    def _publish_link_signal(self, ev: LinkSignal) -> None:
+        """Publish the gateway-measured RSSI (real dBm) as the SIGNAL sensor.
+        Discovery once per device; state each frame."""
+        machex = ev.mac.hex()
+        key = f"{machex}_SIGNAL"
+        if key not in self._discovery_done:
+            entity = entity_for("SIGNAL")
+            topic, payload = discovery_config(
+                ev.mac, "SIGNAL", entity, self.base, self.prefix, unit="dBm")
+            self.client.publish(topic, json.dumps(payload), retain=True)
+            self._discovery_done.add(key)
+        self.client.publish(f"{self.base}/{machex}/SIGNAL",
+                            str(int(round(ev.rssi_dbm))), retain=True)
+
     def _publish_button_press(self, ev: ButtonPressed) -> None:
-        """Publish a momentary press: ON to the BUTTON topic (HA off_delay
-        auto-resets it). Discovery is sent once per device."""
+        """Fire an HA `event` (a press trigger HA timestamps). No fake "off":
+        the sensor never reports a button release. Discovery once per device."""
         machex = ev.mac.hex()
         key = f"{machex}_{PRESS_ENTITY_NAME}"
         if key not in self._discovery_done:
@@ -103,7 +124,8 @@ class MqttBridge:
                 unit=None)
             self.client.publish(topic, json.dumps(payload), retain=True)
             self._discovery_done.add(key)
-        self.client.publish(f"{self.base}/{machex}/{PRESS_ENTITY_NAME}", "ON")
+        self.client.publish(f"{self.base}/{machex}/{PRESS_ENTITY_NAME}",
+                            json.dumps({"event_type": "press"}))
 
     def _publish_property(self, ev: PropertyEvent) -> None:
         machex = ev.mac.hex()

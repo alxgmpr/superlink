@@ -23,7 +23,8 @@ class SessionProtocol(Protocol):
     mac: bytes
     state: str
     def start(self, now: float) -> None: ...
-    def feed(self, frame, channel: int, now: float): ...
+    def feed(self, frame, channel: int, now: float,
+             rssi: float | None = ..., snr: float | None = ...): ...
     def tick(self, now: float): ...
     def queue_body(self, body: bytes) -> None: ...
 
@@ -75,7 +76,9 @@ class BridgeCore:
             self._started.add(mac)
             session.start(now)
 
-    def feed(self, raw: bytes, channel: int, now: float) -> list[OutgoingFrame]:
+    def feed(self, raw: bytes, channel: int, now: float,
+             rssi: float | None = None, snr: float | None = None
+             ) -> list[OutgoingFrame]:
         frame = parse_frame(raw)
         if frame is None:
             return []
@@ -83,7 +86,7 @@ class BridgeCore:
         session = self._sessions.get(mac)
         if session is not None:
             self._ensure_started(mac, session, now)
-            frames, events = session.feed(frame, channel, now)
+            frames, events = session.feed(frame, channel, now, rssi=rssi, snr=snr)
             self._emit(events)
             return list(frames)
         if mac in self._discovered:
@@ -95,7 +98,7 @@ class BridgeCore:
             self._adopt(mac)
             session = self._sessions[mac]
             self._ensure_started(mac, session, now)
-            frames, events = session.feed(frame, channel, now)
+            frames, events = session.feed(frame, channel, now, rssi=rssi, snr=snr)
             self._emit(events)
             return list(frames)
         return []

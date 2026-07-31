@@ -81,22 +81,39 @@ def test_start_sets_lwt_and_online():
     assert "superlink/adopt" in client.subscriptions
 
 
+# --- link signal (gateway RSSI in dBm) ---
+
+def test_link_signal_publishes_rssi_dbm():
+    from superlink.bridge.events import LinkSignal
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(LinkSignal(mac=MAC, rssi_dbm=-42.5, snr=9.0))
+    assert client.find(f"superlink/{MH}/SIGNAL") == "-42"
+    cfg = client.find(f"homeassistant/sensor/{MH}_SIGNAL/config")
+    assert cfg is not None
+    payload = json.loads(cfg)
+    assert payload["device_class"] == "signal_strength"
+    assert payload["unit_of_measurement"] == "dBm"
+
+
 # --- physical button press (id19 edge) ---
 
-def test_button_pressed_event_publishes_momentary_on():
+def test_button_pressed_publishes_ha_event():
     from superlink.bridge.events import ButtonPressed
     rt, client, bridge = _bridge()
     bridge.start()
     bridge.on_event(ButtonPressed(mac=MAC, property_id=19,
                                   name="BUTTON_PRESSED", value=1500))
-    # Momentary press: publishes ON to a dedicated topic; HA auto-resets via
-    # the entity's off_delay (a physical button has no "off" report).
-    assert client.find(f"superlink/{MH}/BUTTON") == "ON"
-    cfg = client.find(f"homeassistant/binary_sensor/{MH}_BUTTON/config")
+    # A physical button has no discrete "off" — surface it as an HA `event`
+    # entity (a press trigger with a timestamp), not an on/off binary_sensor.
+    state = client.find(f"superlink/{MH}/BUTTON")
+    assert json.loads(state)["event_type"] == "press"
+    cfg = client.find(f"homeassistant/event/{MH}_BUTTON/config")
     assert cfg is not None
     payload = json.loads(cfg)
-    assert payload["off_delay"] > 0
+    assert payload["event_types"] == ["press"]
     assert payload["state_topic"] == f"superlink/{MH}/BUTTON"
+    assert "payload_on" not in payload and "payload_off" not in payload
 
 
 # --- command buttons: LOCATE / REBOOT / refresh ---
@@ -138,6 +155,28 @@ def test_button_press_reboot_submits_action():
     bridge.start()
     bridge._on_message(f"superlink/{MH}/reboot/press", "PRESS")
     assert len(got) == 1 and isinstance(got[0], Reboot) and got[0].mac == MAC
+
+
+def test_clear_tamper_button_submits_property_set_raw():
+    from superlink.bridge.events import SetPropertyRaw
+    rt, client, bridge = _bridge()
+    got = []
+    rt.submit_action = lambda a: got.append(a)
+    bridge.start()
+    bridge._on_message(f"superlink/{MH}/clear_tamper/press", "PRESS")
+    assert len(got) == 1 and isinstance(got[0], SetPropertyRaw)
+    assert got[0].mac == MAC and got[0].property_id == 22
+    assert got[0].channel == 0 and got[0].raw == b"\x01"
+
+
+def test_clear_tamper_button_discovery_published():
+    from superlink.bridge.events import DeviceStateEvent
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    cfg = client.find(f"homeassistant/button/{MH}_clear_tamper/config")
+    assert cfg is not None
+    assert json.loads(cfg)["command_topic"] == f"superlink/{MH}/clear_tamper/press"
 
 
 def test_refresh_button_requests_device_info():

@@ -3,10 +3,11 @@ from types import SimpleNamespace
 
 
 def make_packet(payload: bytes, ul_channel: int = 1, timestamp_us: int = 1000,
-                crc_ok: bool = True):
-    """Minimal stand-in exposing the 4 attrs BridgeRuntime reads off an RxPacket."""
+                crc_ok: bool = True, rssi: float = -50.0, snr: float = 8.0):
+    """Minimal stand-in exposing the attrs BridgeRuntime reads off an RxPacket."""
     return SimpleNamespace(payload=payload, ul_channel=ul_channel,
-                           timestamp_us=timestamp_us, crc_ok=crc_ok)
+                           timestamp_us=timestamp_us, crc_ok=crc_ok,
+                           rssi=rssi, snr=snr)
 
 
 class FakeHal:

@@ -3,7 +3,7 @@
 # big-endian. See docs/protocol/superlink_application_layer.md.
 properties:
   1:  { name: UPTIME,           type: u32, unit: s }
-  2:  { name: SIGNAL,           type: s16 }
+  2:  { name: SIGNAL_RAW,       type: s16 }   # opaque sensor-side value; HA SIGNAL uses gateway RSSI (dBm)
   3:  { name: BATTERY,          type: u8,  unit: "%", access: r }
   4:  { name: LEAK_DETECTED,    type: bool }
   5:  { name: LEAK_AUX_CONNECTED, type: bool }

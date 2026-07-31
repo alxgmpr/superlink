@@ -19,7 +19,7 @@ class FakeSession:
         self.started = False
     def start(self, now):
         self.started = True
-    def feed(self, frame, channel, now):
+    def feed(self, frame, channel, now, rssi=None, snr=None):
         ev = PropertyEvent(mac=self.mac, property_id=3, name="BATTERY",
                            channel=0, raw=b"\x64", value=100, unit="%", decoded=True)
         return [], [ev]

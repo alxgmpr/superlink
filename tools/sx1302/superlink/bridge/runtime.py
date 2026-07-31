@@ -152,7 +152,8 @@ class BridgeRuntime:
         for pkt in self.hal.receive():
             if not pkt.crc_ok:
                 continue
-            frames = self.core.feed(pkt.payload, pkt.ul_channel, now)
+            frames = self.core.feed(pkt.payload, pkt.ul_channel, now,
+                                    rssi=pkt.rssi, snr=pkt.snr)
             self._schedule(frames, base_ts=pkt.timestamp_us)
 
     def tick_if_due(self, now: float) -> None:

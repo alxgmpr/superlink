@@ -291,6 +291,24 @@ def test_button_press_edge_surfaces_through_session():
     assert any(isinstance(e, ButtonPressed) and e.property_id == 19 for e in evs)
 
 
+def test_decoded_telemetry_emits_link_signal_rssi():
+    from superlink.bridge.events import LinkSignal
+    s = _active_data_session()
+    _, evs = s.feed(_craft_data_frame(s.session_key), channel=1, now=6.0,
+                    rssi=-42.5, snr=9.0)
+    sig = [e for e in evs if isinstance(e, LinkSignal)]
+    assert sig and sig[0].mac == SENSOR_MAC
+    assert sig[0].rssi_dbm == -42.5 and sig[0].snr == 9.0
+
+
+def test_no_link_signal_without_rssi():
+    # No RSSI supplied (e.g. legacy path) -> no LinkSignal, no crash.
+    from superlink.bridge.events import LinkSignal
+    s = _active_data_session()
+    _, evs = s.feed(_craft_data_frame(s.session_key), channel=1, now=6.0)
+    assert not any(isinstance(e, LinkSignal) for e in evs)
+
+
 def test_no_command_pushed_without_queue():
     # No queued body -> a telemetry frame must NOT emit a spurious DL command.
     s = _active_data_session()

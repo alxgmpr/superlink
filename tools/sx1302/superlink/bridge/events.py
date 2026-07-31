@@ -43,6 +43,15 @@ class ButtonPressed(Event):
 
 
 @dataclass(frozen=True)
+class LinkSignal(Event):
+    """Gateway-measured link quality for a received frame: RSSI in dBm and SNR
+    in dB, straight off the SX1302 (real units, unlike the sensor's opaque id2)."""
+    mac: bytes
+    rssi_dbm: float
+    snr: float
+
+
+@dataclass(frozen=True)
 class DeviceInfoEvent(Event):
     mac: bytes
     device_type: int
