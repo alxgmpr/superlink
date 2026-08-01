@@ -88,19 +88,3 @@ def test_control_socket_disabled(tmp_path):
     c = RuntimeConfig.load(_write(
         tmp_path, 'gw_mac: "010203040506"\nadopt: all\ncontrol_socket: null\n'))
     assert c.control_socket is None
-
-
-def test_liveness_timeouts_exceed_report_interval():
-    # An idle-but-alive sensor reports every REPORT_INTERVAL (baked at 300s).
-    # If link_lost_timeout / watchdog_timeout are shorter, the link is declared
-    # dead *between* reports and HA flaps unavailable. Both must clear 2x the
-    # interval (tolerating one fully-missed report), and watchdog must exceed
-    # link_lost so the gentle re-handshake happens before the hard re-arm.
-    from superlink.bridge.profiles import ProfileRegistry
-    reg = ProfileRegistry.load()
-    interval = next(int.from_bytes(raw, "big")
-                    for pid, _ch, raw in reg.post_adoption(None) if pid == 13)
-    c = RuntimeConfig(gw_mac=bytes.fromhex("010203040506"),
-                      pairing_key=DEFAULT_PAIRING_KEY, adopt=ADOPT_ALL)
-    assert c.link_lost_timeout > 2 * interval
-    assert c.watchdog_timeout > c.link_lost_timeout
