@@ -461,6 +461,17 @@ def _craft_short_challenge_frame():
     return parse_frame(raw)
 
 
+def test_short_resume_0x42_answered_with_connrsp():
+    # inner_type-0 0x42 (2-byte `01 00`) is the sensor's reconnect request
+    # (firmware sub_524ac case 0 -> sub_51742 answers with a ConnRsp, inner_type 1).
+    # The bridge must answer it with a 0x62 ConnRsp — same as a 0x40 discovery —
+    # instead of dead-ending it as "too short" (which strands the sensor).
+    s = _stuck_beaconing_session(watchdog_timeout=0.0)
+    frames, events = s.feed(_craft_short_challenge_frame(), channel=1, now=5.0)
+    assert any(f.data[1] == 0x62 for f in frames), \
+        "short inner_type-0 0x42 resume must be answered with a 0x62 ConnRsp"
+
+
 def test_watchdog_rearms_after_deep_silence():
     from superlink.bridge.session import State
     s = _stuck_beaconing_session(watchdog_timeout=150.0)

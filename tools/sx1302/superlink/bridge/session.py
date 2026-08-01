@@ -787,6 +787,33 @@ class DeviceSession:
         return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
                            self.session_key, counter=ctr)
 
+    def _build_connrsp(self, mac: bytes, channel: int):
+        """Build the 0x62 ConnRsp OutgoingFrame for a discovery/resume on the
+        paired DL channel (or None if channel out of range).
+
+        Reuses the current keypair (self._pubkey) and transport key; no session
+        key is derived here — the sensor completes the handshake with a Challenge.
+        Shared by the 0x40 discovery path and the inner_type-0 0x42 resume path
+        (firmware answers both with a ConnRsp: sub_52090 / sub_51742)."""
+        if not (1 <= channel <= 8):
+            return None
+        from ..hal import DL_FREQ_HZ
+        dl_freq = DL_FREQ_HZ[channel - 1]
+        self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
+        # 0x62 ConnRsp plaintext (41 bytes) per the captured real-gateway frame:
+        # `01 01 | gw_pubkey | 0a 00 02 | 03 fe ff 03`.
+        inner_payload = (b'\x01\x01' + self._pubkey + b'\x0a\x00\x02'
+                         + b'\x03\xfe\xff\x03')
+        header = bytes([0xE0, 0x62]) + mac + bytes([self._tx_seq_hi,
+                                                    self._tx_seq_lo])
+        mic = compute_mic(header, inner_payload)
+        tx_frame = build_frame(0xE0, 0x62, mac, self._tx_seq_hi, self._tx_seq_lo,
+                               mic, inner_payload, self._transport_key, counter=0)
+        log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, pubkey=%s...)",
+                 format_mac(mac), dl_freq / 1e6, len(tx_frame),
+                 self._pubkey[:8].hex())
+        return OutgoingFrame(data=tx_frame, freq_hz=dl_freq, channel=channel)
+
     def _scan_data_counter(self, frame) -> int | None:
         """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
 
@@ -874,34 +901,9 @@ class DeviceSession:
                     self._on_commit()
 
                 # Build 0x62 ConnectionRsp on paired DL channel.
-                if 1 <= channel <= 8:
-                    dl_freq = DL_FREQ_HZ[channel - 1]
-                    self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
-
-                    # 0x62 ConnRsp plaintext payload (41 bytes), per the
-                    # captured real-gateway frame. Marker `03 fe ff 03` at [37:41].
-                    inner_payload = (
-                        b'\x01\x01'
-                        + self._pubkey
-                        + b'\x0a\x00\x02'
-                        + b'\x03\xfe\xff\x03'
-                    )
-
-                    header = bytes([0xE0, 0x62]) + frame.mac + bytes([
-                        self._tx_seq_hi, self._tx_seq_lo])
-                    mic = compute_mic(header, inner_payload)
-                    tx_frame = build_frame(
-                        0xE0, 0x62, frame.mac,
-                        self._tx_seq_hi, self._tx_seq_lo,
-                        mic, inner_payload,
-                        self._transport_key, counter=0,
-                    )
-                    log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, "
-                             "pubkey=%s...)", format_mac(frame.mac),
-                             dl_freq / 1e6, len(tx_frame),
-                             self._pubkey[:8].hex())
-                    return frame, [OutgoingFrame(data=tx_frame, freq_hz=dl_freq,
-                                                 channel=channel)], events
+                of = self._build_connrsp(frame.mac, channel)
+                if of is not None:
+                    return frame, [of], events
 
             return frame, [], events
 
@@ -915,15 +917,27 @@ class DeviceSession:
                       len(frame.payload) if frame.payload else 0,
                       frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
-                # The 2-byte "resume" 0x42 the bridge can't complete. Count it —
-                # enough of these in a row means the sensor is stuck on the resume
-                # path and the watchdog should re-arm (tick() acts on the count).
+                # inner_type-0 resume: the sensor's short (`01 00`) reconnect
+                # request. Firmware (sub_524ac case 0 -> sub_51742) answers it
+                # with a ConnRsp — same as a 0x40 discovery — so the handshake
+                # re-opens instead of dead-ending here. We do the same. The tally
+                # still increments as a fallback: if repeated resumes never
+                # complete (our ConnRsp unanswered), the watchdog re-arms.
                 self._short_challenge_count += 1
-                log.warning("ConnectionChallenge too short: %d bytes (short-0x42 "
-                            "tally %d/%d)",
+                is_resume = (frame.payload is not None
+                             and len(frame.payload) >= 2
+                             and frame.payload[0] == 0x01
+                             and frame.payload[1] == 0x00)
+                log.warning("ConnectionChallenge short: %d bytes (short-0x42 "
+                            "tally %d/%d)%s",
                             len(frame.payload) if frame.payload else 0,
                             self._short_challenge_count,
-                            self.watchdog_short_challenge_k)
+                            self.watchdog_short_challenge_k,
+                            " — answering resume with ConnRsp" if is_resume else "")
+                if is_resume and self._now >= self._backoff_until:
+                    of = self._build_connrsp(frame.mac, channel)
+                    if of is not None:
+                        return frame, [of], events
                 return frame, [], events
 
             # 0x42 ConnectionChallenge plaintext layout (2026-04-21 keyhook
