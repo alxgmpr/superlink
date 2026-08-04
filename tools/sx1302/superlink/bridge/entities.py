@@ -14,7 +14,8 @@ ENTITY_MAP: dict[str, dict] = {
     "TEMPERATURE":          {"component": "sensor", "device_class": "temperature", "name": "Temperature"},
     "HUMIDITY":             {"component": "sensor", "device_class": "humidity", "name": "Humidity"},
     "BATTERY":              {"component": "sensor", "device_class": "battery", "name": "Battery"},
-    "BATTERY_VOLTAGE":      {"component": "sensor", "device_class": "voltage", "name": "Battery voltage"},
+    "BATTERY_VOLTAGE":      {"component": "sensor", "device_class": "voltage", "name": "Battery voltage",
+                             "precision": 3, "state_class": "measurement"},
     "SIGNAL":               {"component": "sensor", "device_class": "signal_strength", "name": "Signal"},
     "AMBIENT_LIGHT":        {"component": "sensor", "device_class": "illuminance", "name": "Ambient light"},
     "LED_ENABLED":          {"component": "switch", "name": "LED"},
@@ -109,6 +110,12 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
         payload["device_class"] = entity["device_class"]
     if "icon" in entity:
         payload["icon"] = entity["icon"]
+    # HA rounds to 0 decimals by default for most device classes, which turns
+    # 2.986 V into "3 V". Entities with sub-unit resolution must say so.
+    if "precision" in entity:
+        payload["suggested_display_precision"] = entity["precision"]
+    if "state_class" in entity:
+        payload["state_class"] = entity["state_class"]
     if unit:
         payload["unit_of_measurement"] = unit
     if component in ("binary_sensor", "switch"):

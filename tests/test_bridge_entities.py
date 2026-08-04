@@ -61,3 +61,23 @@ def test_friendly_name_falls_back_to_sentence_case():
     assert friendly_name("AMBIENT_LIGHT", {}) == "Ambient light"
     assert friendly_name("SOME_NEW_PROPERTY", {"component": "sensor"}) \
         == "Some new property"
+
+
+def test_voltage_sensor_declares_display_precision():
+    """Without suggested_display_precision HA renders 2.986 V as "3 V"."""
+    topic, payload = discovery_config(MAC, "BATTERY_VOLTAGE",
+                                      ENTITY_MAP["BATTERY_VOLTAGE"],
+                                      base_topic="superlink",
+                                      discovery_prefix="homeassistant", unit="V")
+    assert payload["suggested_display_precision"] == 3
+    assert payload["state_class"] == "measurement"
+    assert payload["device_class"] == "voltage"
+    assert payload["name"] == "Battery voltage"
+
+
+def test_precision_omitted_when_not_declared():
+    _, payload = discovery_config(MAC, "BATTERY", ENTITY_MAP["BATTERY"],
+                                  base_topic="superlink",
+                                  discovery_prefix="homeassistant", unit="%")
+    assert "suggested_display_precision" not in payload
+    assert "state_class" not in payload
