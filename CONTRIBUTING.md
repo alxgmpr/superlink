@@ -1,4 +1,4 @@
-# Contributing to OpenSuperLink
+# Contributing to superlink2mqtt
 
 ## How You Can Help
 

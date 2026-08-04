@@ -1,19 +1,22 @@
 """Property -> Home Assistant entity mapping and discovery-config builder."""
 from __future__ import annotations
 
+# `name` is the human-facing HA entity name (sentence case, per the HA style
+# guide) — the raw ALL_CAPS property id is kept only as the unique_id/object_id
+# and the MQTT topic segment, so entity_ids stay stable.
 ENTITY_MAP: dict[str, dict] = {
-    "LEAK_DETECTED":        {"component": "binary_sensor", "device_class": "moisture"},
-    "MOTION_DETECTED":      {"component": "binary_sensor", "device_class": "motion"},
-    "ENTRY_DETECTED":       {"component": "binary_sensor", "device_class": "opening"},
-    "TAMPER_DETECTED":      {"component": "binary_sensor", "device_class": "tamper"},
-    "GLASS_BREAK_DETECTED": {"component": "binary_sensor", "device_class": "sound"},
-    "SMOKE_STATUS":         {"component": "binary_sensor", "device_class": "smoke"},
-    "TEMPERATURE":          {"component": "sensor", "device_class": "temperature"},
-    "HUMIDITY":             {"component": "sensor", "device_class": "humidity"},
-    "BATTERY":              {"component": "sensor", "device_class": "battery"},
-    "SIGNAL":               {"component": "sensor", "device_class": "signal_strength"},
-    "AMBIENT_LIGHT":        {"component": "sensor", "device_class": "illuminance"},
-    "LED_ENABLED":          {"component": "switch"},
+    "LEAK_DETECTED":        {"component": "binary_sensor", "device_class": "moisture", "name": "Leak"},
+    "MOTION_DETECTED":      {"component": "binary_sensor", "device_class": "motion", "name": "Motion"},
+    "ENTRY_DETECTED":       {"component": "binary_sensor", "device_class": "opening", "name": "Door"},
+    "TAMPER_DETECTED":      {"component": "binary_sensor", "device_class": "tamper", "name": "Tamper"},
+    "GLASS_BREAK_DETECTED": {"component": "binary_sensor", "device_class": "sound", "name": "Glass break"},
+    "SMOKE_STATUS":         {"component": "binary_sensor", "device_class": "smoke", "name": "Smoke"},
+    "TEMPERATURE":          {"component": "sensor", "device_class": "temperature", "name": "Temperature"},
+    "HUMIDITY":             {"component": "sensor", "device_class": "humidity", "name": "Humidity"},
+    "BATTERY":              {"component": "sensor", "device_class": "battery", "name": "Battery"},
+    "SIGNAL":               {"component": "sensor", "device_class": "signal_strength", "name": "Signal"},
+    "AMBIENT_LIGHT":        {"component": "sensor", "device_class": "illuminance", "name": "Ambient light"},
+    "LED_ENABLED":          {"component": "switch", "name": "LED"},
 }
 
 
@@ -31,18 +34,28 @@ COMMAND_BUTTONS: dict[str, dict] = {
 # press (a last-press uptime that advances). It surfaces as an HA `event` entity
 # (a press trigger HA timestamps), not an on/off binary_sensor.
 PRESS_ENTITY_NAME = "BUTTON"
-PRESS_ENTITY: dict = {"component": "event", "event_types": ["press"]}
+PRESS_ENTITY: dict = {"component": "event", "event_types": ["press"],
+                      "name": "Button"}
 
 
 def entity_for(name: str) -> dict | None:
     return ENTITY_MAP.get(name)
 
 
+def friendly_name(name: str, entity: dict) -> str:
+    """Display name for an entity: the curated one, else the property id
+    de-underscored and sentence-cased (AMBIENT_LIGHT -> "Ambient light")."""
+    if entity.get("name"):
+        return entity["name"]
+    words = name.replace("_", " ").strip().lower()
+    return words[:1].upper() + words[1:]
+
+
 def _device_block(machex: str) -> dict:
     return {
         "identifiers": [machex],
         "name": f"SuperLink {machex}",
-        "manufacturer": "Ubiquiti (OpenSuperLink)",
+        "manufacturer": "Ubiquiti (superlink2mqtt)",
         "model": "SuperLink sensor",
     }
 
@@ -82,7 +95,7 @@ def discovery_config(mac: bytes, name: str, entity: dict, base_topic: str,
     config_topic = f"{discovery_prefix}/{component}/{uid}/config"
 
     payload = {
-        "name": name,
+        "name": friendly_name(name, entity),
         "unique_id": uid,
         "object_id": uid,
         "state_topic": state_topic,
