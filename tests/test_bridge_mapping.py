@@ -89,3 +89,15 @@ def test_adopt_has_no_body(reg):
     from superlink.bridge.events import AdoptDevice
     with pytest.raises(TypeError):
         action_to_body(AdoptDevice(mac=MAC), reg)
+
+
+def test_battery_report_also_emits_voltage(reg):
+    """Real 4-byte BATTERY payload yields both the percent and the millivolts."""
+    raw = bytes.fromhex("5a0ba000")             # 90 %, 2976 mV
+    body = bytes([12, 0]) + bytes([3, 0]) + raw
+    evs = events_from_app_message(MAC, body, reg, sizes={3: 4})
+    assert [(e.name, e.value, e.unit) for e in evs] == [
+        ("BATTERY", 90, "%"),
+        ("BATTERY_VOLTAGE", pytest.approx(2.976), "V"),
+    ]
+    assert all(e.property_id == 3 and e.decoded for e in evs)

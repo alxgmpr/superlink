@@ -4,7 +4,13 @@
 properties:
   1:  { name: UPTIME,           type: u32, unit: s }
   2:  { name: SIGNAL_RAW,       type: s16 }   # opaque sensor-side value; HA SIGNAL uses gateway RSSI (dBm)
-  3:  { name: BATTERY,          type: u8,  unit: "%", access: r }
+  # 4-byte payload, confirmed on hardware (9041b22e9a53, ~19k samples):
+  #   [percent:u8][millivolts:u16][reserved:u8=0]   e.g. 5a 0ba0 00 -> 90 %, 2976 mV
+  # The percent is the firmware's own filtered discharge-curve output and moves
+  # in 1 % steps with hysteresis; the millivolts are the raw rail measurement
+  # and track the actual supply. Both are surfaced.
+  3:  { name: BATTERY,          type: u8,  unit: "%", access: r,
+        extra: [ { name: BATTERY_VOLTAGE, type: u16, offset: 1, scale: 0.001, unit: V } ] }
   4:  { name: LEAK_DETECTED,    type: bool }
   5:  { name: LEAK_AUX_CONNECTED, type: bool }
   6:  { name: LEAK_CONFIG }

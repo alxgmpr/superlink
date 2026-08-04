@@ -14,6 +14,7 @@ ENTITY_MAP: dict[str, dict] = {
     "TEMPERATURE":          {"component": "sensor", "device_class": "temperature", "name": "Temperature"},
     "HUMIDITY":             {"component": "sensor", "device_class": "humidity", "name": "Humidity"},
     "BATTERY":              {"component": "sensor", "device_class": "battery", "name": "Battery"},
+    "BATTERY_VOLTAGE":      {"component": "sensor", "device_class": "voltage", "name": "Battery voltage"},
     "SIGNAL":               {"component": "sensor", "device_class": "signal_strength", "name": "Signal"},
     "AMBIENT_LIGHT":        {"component": "sensor", "device_class": "illuminance", "name": "Ambient light"},
     "LED_ENABLED":          {"component": "switch", "name": "LED"},

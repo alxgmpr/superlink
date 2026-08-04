@@ -78,6 +78,39 @@ class ProfileRegistry:
             return (n * entry["scale"], unit, True)
         return (n, unit, True)
 
+    def extras(self, property_id: int, raw: bytes,
+               device_type: int | None = None) -> list[tuple[str, object, str | None]]:
+        """Additional measurements packed into the same property payload.
+
+        Some properties carry more than one field — BATTERY is
+        [percent][millivolts][reserved] — so each `extra` entry decodes its own
+        slice at its own offset and surfaces under its own name. A payload too
+        short to hold the slice yields nothing for it, rather than a zero.
+
+        Returns a list of (name, value, unit).
+        """
+        entry = self._entry(property_id, device_type)
+        if not entry:
+            return []
+        out = []
+        for ex in entry.get("extra", []):
+            offset = ex.get("offset", 0)
+            t = ex["type"]
+            if t == "bool":
+                chunk = raw[offset:]
+                if chunk:
+                    out.append((ex["name"], any(chunk), ex.get("unit")))
+                continue
+            size, signed = _INT_TYPES[t]
+            chunk = raw[offset:offset + size]
+            if len(chunk) < size:
+                continue
+            n = int.from_bytes(chunk, "big", signed=signed)
+            if "scale" in ex:
+                n = n * ex["scale"]
+            out.append((ex["name"], n, ex.get("unit")))
+        return out
+
     def encode(self, name_or_id: str | int, value,
                device_type: int | None = None) -> tuple[int, bytes]:
         pid = self.resolve_id(name_or_id)
