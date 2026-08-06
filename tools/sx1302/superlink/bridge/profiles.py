@@ -9,16 +9,19 @@ _DEFAULT_PATH = os.path.join(os.path.dirname(__file__), "profiles", "superlink.y
 
 
 class ProfileRegistry:
-    def __init__(self, properties: dict, device_types: dict):
+    def __init__(self, properties: dict, device_types: dict,
+                 post_adoption: dict | None = None):
         self._props = {int(k): v for k, v in properties.items()}
         self._by_name = {v["name"]: int(k) for k, v in self._props.items()}
         self._device_types = device_types or {}
+        self._post_adoption = post_adoption or {}
 
     @classmethod
     def load(cls, path: str | None = None) -> "ProfileRegistry":
         with open(path or _DEFAULT_PATH) as f:
             doc = yaml.safe_load(f)
-        return cls(doc.get("properties", {}), doc.get("device_types", {}))
+        return cls(doc.get("properties", {}), doc.get("device_types", {}),
+                   doc.get("post_adoption", {}))
 
     def _entry(self, property_id: int, device_type: int | None):
         if device_type is not None:
@@ -36,6 +39,30 @@ class ProfileRegistry:
         entry = self._props.get(property_id)
         return entry["name"] if entry else f"UNKNOWN_{property_id}"
 
+    def edge(self, property_id: int, device_type: int | None = None):
+        """Edge-emit mode for a property (e.g. "increase"), or None.
+
+        Marks a property (like BUTTON_PRESSED, a monotonic last-press uptime)
+        whose consumers want a discrete event each time its value advances,
+        rather than the raw level.
+        """
+        entry = self._entry(property_id, device_type)
+        return entry.get("edge") if entry else None
+
+    def post_adoption(self, device_type: int | None = None
+                      ) -> list[tuple[int, int, bytes]]:
+        """Config to auto-push once a device commits adoption.
+
+        Returns a list of (property_id, channel, raw_value_bytes). Uses the
+        device-type-specific list when present, else `default` (the fresh-commit
+        case, where the device type is not yet known).
+        """
+        entries = self._post_adoption.get(device_type)
+        if entries is None:
+            entries = self._post_adoption.get("default", [])
+        return [(e["id"], e.get("channel", 0), bytes.fromhex(e["raw"]))
+                for e in entries]
+
     def decode(self, property_id: int, raw: bytes,
                device_type: int | None = None):
         entry = self._entry(property_id, device_type)
@@ -50,6 +77,39 @@ class ProfileRegistry:
         if "scale" in entry:
             return (n * entry["scale"], unit, True)
         return (n, unit, True)
+
+    def extras(self, property_id: int, raw: bytes,
+               device_type: int | None = None) -> list[tuple[str, object, str | None]]:
+        """Additional measurements packed into the same property payload.
+
+        Some properties carry more than one field — BATTERY is
+        [percent][millivolts][reserved] — so each `extra` entry decodes its own
+        slice at its own offset and surfaces under its own name. A payload too
+        short to hold the slice yields nothing for it, rather than a zero.
+
+        Returns a list of (name, value, unit).
+        """
+        entry = self._entry(property_id, device_type)
+        if not entry:
+            return []
+        out = []
+        for ex in entry.get("extra", []):
+            offset = ex.get("offset", 0)
+            t = ex["type"]
+            if t == "bool":
+                chunk = raw[offset:]
+                if chunk:
+                    out.append((ex["name"], any(chunk), ex.get("unit")))
+                continue
+            size, signed = _INT_TYPES[t]
+            chunk = raw[offset:offset + size]
+            if len(chunk) < size:
+                continue
+            n = int.from_bytes(chunk, "big", signed=signed)
+            if "scale" in ex:
+                n = n * ex["scale"]
+            out.append((ex["name"], n, ex.get("unit")))
+        return out
 
     def encode(self, name_or_id: str | int, value,
                device_type: int | None = None) -> tuple[int, bytes]:

@@ -35,6 +35,12 @@ class RuntimeConfig:
     csv_path: str | None = None
     mqtt: "MqttConfig | None" = None
     control_socket: str | None = None
+    # This sensor streams telemetry every ~11s while connected (measured on
+    # hardware, door open AND closed — REPORT_INTERVAL=300 does NOT govern the
+    # connected cadence), so 60/150s tolerate several missed reports before
+    # declaring the link lost. Do NOT raise these to "cover" a 300s interval —
+    # the connected link is never that quiet, and longer timeouts only delay a
+    # genuinely-dead device going offline in HA.
     link_lost_timeout: float = 60.0
     watchdog_timeout: float = 150.0
     watchdog_short_challenge_k: int = 3

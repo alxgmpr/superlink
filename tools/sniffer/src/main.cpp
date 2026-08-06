@@ -96,7 +96,7 @@ void setup() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  OpenSuperLink LoRa Sniffer v0.1");
+  Serial.println("  superlink2mqtt LoRa Sniffer v0.1");
   Serial.println("  Heltec LoRa 32 V3 (SX1262)");
   Serial.println("========================================");
   Serial.println();
@@ -110,7 +110,7 @@ void setup() {
   display.begin();
   display.setFont(u8g2_font_6x10_tf);
   display.clearBuffer();
-  display.drawStr(16, 28, "OpenSuperLink");
+  display.drawStr(22, 28, "superlink2mqtt");
   display.drawStr(24, 42, "Sniffer v0.1");
   display.sendBuffer();
   delay(500);

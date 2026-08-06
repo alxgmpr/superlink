@@ -25,6 +25,33 @@ def test_property_report_maps_to_events(reg):
     assert evs[1].name == "BATTERY" and evs[1].value == 50 and evs[1].unit == "%"
 
 
+def test_button_press_emits_edge_event_on_increase(reg):
+    from superlink.bridge.events import ButtonPressed
+    sizes = {19: 4}
+    last: dict = {}
+
+    def report(uptime):
+        body = bytes([12, 0]) + bytes([19, 0]) + uptime.to_bytes(4, "big")
+        return events_from_app_message(MAC, body, reg, sizes=sizes,
+                                       last_values=last)
+
+    # First sighting establishes the baseline — a PropertyEvent, but NO press
+    # (the sensor reports the last-press uptime continuously; only a *new* press
+    # advances it, so the first value we ever see is not itself an edge).
+    evs = report(1000)
+    assert [type(e) for e in evs] == [PropertyEvent]
+    assert evs[0].name == "BUTTON_PRESSED" and evs[0].value == 1000
+
+    # Same value again: still no press.
+    assert [type(e) for e in report(1000)] == [PropertyEvent]
+
+    # Uptime advances: a press happened -> ButtonPressed alongside the report.
+    evs = report(1500)
+    assert [type(e) for e in evs] == [PropertyEvent, ButtonPressed]
+    assert evs[1].mac == MAC and evs[1].property_id == 19
+    assert evs[1].name == "BUTTON_PRESSED"
+
+
 def test_unknown_message_is_raw(reg):
     body = bytes([200, 7, 0xaa, 0xbb])
     evs = events_from_app_message(MAC, body, reg)
@@ -62,3 +89,36 @@ def test_adopt_has_no_body(reg):
     from superlink.bridge.events import AdoptDevice
     with pytest.raises(TypeError):
         action_to_body(AdoptDevice(mac=MAC), reg)
+
+
+def test_battery_report_also_emits_voltage(reg):
+    """Real 4-byte BATTERY payload yields both the percent and the millivolts."""
+    raw = bytes.fromhex("5a0ba000")             # 90 %, 2976 mV
+    body = bytes([12, 0]) + bytes([3, 0]) + raw
+    evs = events_from_app_message(MAC, body, reg, sizes={3: 4})
+    assert [(e.name, e.value, e.unit) for e in evs] == [
+        ("BATTERY", 90, "%"),
+        ("BATTERY_VOLTAGE", pytest.approx(2.976), "V"),
+    ]
+    assert all(e.property_id == 3 and e.decoded for e in evs)
+
+
+def test_status_response_becomes_command_status(reg):
+    """msgId 1 is the sensor's reply to a command, echoing that command's
+    messageTag. Ground truth: body `013500` closed the FACTORY_RESET tagged
+    0x35 in captures/live/bridge_adopt_fresh_pass2_DECODED.txt."""
+    from superlink.bridge.events import CommandStatus
+    evs = events_from_app_message(MAC, bytes.fromhex("013500"), reg)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert isinstance(ev, CommandStatus)
+    assert ev.mac == MAC
+    assert ev.message_tag == 0x35
+    assert ev.status_code == 0
+
+
+def test_status_response_reports_nonzero_status(reg):
+    from superlink.bridge.events import CommandStatus
+    evs = events_from_app_message(MAC, bytes.fromhex("01420b"), reg)
+    assert isinstance(evs[0], CommandStatus)
+    assert evs[0].message_tag == 0x42 and evs[0].status_code == 0x0b

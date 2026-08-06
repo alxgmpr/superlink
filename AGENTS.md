@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Project Overview
 
-OpenSuperLink is a reverse engineering project for Ubiquiti's proprietary SuperLink protocol — a LoRa-based sub-GHz radio system (915 MHz US ISM band). Pairing handshake works end-to-end against real sensors via a Pi-based gateway emulator (Curve25519 DH → BLAKE2b KDF → XSalsa20-Poly1305 DL frames). The goal is interoperability research under applicable RE exemptions.
+superlink2mqtt is an open gateway that bridges Ubiquiti SuperLink sensors onto MQTT (with Home Assistant discovery), built on reverse engineering of Ubiquiti's proprietary SuperLink protocol — a LoRa-based sub-GHz radio system (915 MHz US ISM band). Pairing and adoption work end-to-end against real sensors via a Pi-based gateway (Curve25519 DH → BLAKE2b KDF → XSalsa20-Poly1305 DL frames). The RE side is interoperability research under applicable RE exemptions.
 
 SuperLink uses standard Semtech LoRa PHY (SX1262 peripherals, SX1302 gateway baseband) but a completely proprietary MAC layer with libsodium-based encryption (XSalsa20-Poly1305, Curve25519 DH key exchange, BLAKE2b KDF).
 

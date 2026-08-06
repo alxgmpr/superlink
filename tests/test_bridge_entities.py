@@ -1,4 +1,7 @@
-from superlink.bridge.entities import ENTITY_MAP, entity_for, discovery_config
+from superlink.bridge.entities import (
+    ENTITY_MAP, PRESS_ENTITY, PRESS_ENTITY_NAME, entity_for, discovery_config,
+    friendly_name,
+)
 
 MAC = bytes.fromhex("9041B22E9A53")
 
@@ -18,7 +21,9 @@ def test_discovery_config_binary_sensor():
     assert payload["state_topic"] == "superlink/9041b22e9a53/LEAK_DETECTED"
     assert payload["device_class"] == "moisture"
     assert payload["payload_on"] == "ON" and payload["payload_off"] == "OFF"
+    assert payload["name"] == "Leak"                # not the ALL_CAPS id
     assert payload["unique_id"] == "9041b22e9a53_LEAK_DETECTED"
+    assert payload["object_id"] == "9041b22e9a53_LEAK_DETECTED"
     assert payload["availability_topic"] == "superlink/9041b22e9a53/availability"
     assert payload["device"]["identifiers"] == ["9041b22e9a53"]
     assert "command_topic" not in payload           # not a switch
@@ -39,3 +44,40 @@ def test_discovery_config_sensor_unit():
     assert topic == "homeassistant/sensor/9041b22e9a53_TEMPERATURE/config"
     assert payload["unit_of_measurement"] == "°C"
     assert payload["device_class"] == "temperature"
+
+
+def test_every_mapped_entity_has_a_human_name():
+    """No entity should reach HA displayed as a raw ALL_CAPS property id."""
+    for name, entity in list(ENTITY_MAP.items()) + [(PRESS_ENTITY_NAME,
+                                                     PRESS_ENTITY)]:
+        display = friendly_name(name, entity)
+        assert display == entity["name"]
+        assert display != name
+        assert "_" not in display
+        assert display[0].isupper()
+
+
+def test_friendly_name_falls_back_to_sentence_case():
+    assert friendly_name("AMBIENT_LIGHT", {}) == "Ambient light"
+    assert friendly_name("SOME_NEW_PROPERTY", {"component": "sensor"}) \
+        == "Some new property"
+
+
+def test_voltage_sensor_declares_display_precision():
+    """Without suggested_display_precision HA renders 2.986 V as "3 V"."""
+    topic, payload = discovery_config(MAC, "BATTERY_VOLTAGE",
+                                      ENTITY_MAP["BATTERY_VOLTAGE"],
+                                      base_topic="superlink",
+                                      discovery_prefix="homeassistant", unit="V")
+    assert payload["suggested_display_precision"] == 3
+    assert payload["state_class"] == "measurement"
+    assert payload["device_class"] == "voltage"
+    assert payload["name"] == "Battery voltage"
+
+
+def test_precision_omitted_when_not_declared():
+    _, payload = discovery_config(MAC, "BATTERY", ENTITY_MAP["BATTERY"],
+                                  base_topic="superlink",
+                                  discovery_prefix="homeassistant", unit="%")
+    assert "suggested_display_precision" not in payload
+    assert "state_class" not in payload

@@ -270,6 +270,45 @@ def test_queued_command_pushed_on_telemetry_window():
     assert s._pending_bodies == [], "the body must be drained once sent"
 
 
+def _button_report_frame(session_key, uptime, seq_hi=0x10, counter=5):
+    # PROPERTY_REPORT(12) tag0, BUTTON_PRESSED(19) ch0 = u32 uptime.
+    payload = bytes([12, 0, 19, 0]) + uptime.to_bytes(4, "big")
+    return _craft_data_frame(session_key, seq_hi=seq_hi, counter=counter,
+                             payload=payload)
+
+
+def test_button_press_edge_surfaces_through_session():
+    from superlink.bridge.events import ButtonPressed
+    s = _active_data_session()
+    s._prop_sizes = {19: 4}
+    # Baseline sighting: no press yet.
+    _, evs = s.feed(_button_report_frame(s.session_key, 1000, seq_hi=0x10,
+                                         counter=5), channel=1, now=6.0)
+    assert not any(isinstance(e, ButtonPressed) for e in evs)
+    # Uptime advances -> a press edge surfaces.
+    _, evs = s.feed(_button_report_frame(s.session_key, 1500, seq_hi=0x11,
+                                         counter=6), channel=1, now=7.0)
+    assert any(isinstance(e, ButtonPressed) and e.property_id == 19 for e in evs)
+
+
+def test_decoded_telemetry_emits_link_signal_rssi():
+    from superlink.bridge.events import LinkSignal
+    s = _active_data_session()
+    _, evs = s.feed(_craft_data_frame(s.session_key), channel=1, now=6.0,
+                    rssi=-42.5, snr=9.0)
+    sig = [e for e in evs if isinstance(e, LinkSignal)]
+    assert sig and sig[0].mac == SENSOR_MAC
+    assert sig[0].rssi_dbm == -42.5 and sig[0].snr == 9.0
+
+
+def test_no_link_signal_without_rssi():
+    # No RSSI supplied (e.g. legacy path) -> no LinkSignal, no crash.
+    from superlink.bridge.events import LinkSignal
+    s = _active_data_session()
+    _, evs = s.feed(_craft_data_frame(s.session_key), channel=1, now=6.0)
+    assert not any(isinstance(e, LinkSignal) for e in evs)
+
+
 def test_no_command_pushed_without_queue():
     # No queued body -> a telemetry frame must NOT emit a spurious DL command.
     s = _active_data_session()
@@ -420,6 +459,17 @@ def _craft_short_challenge_frame():
     raw = build_frame(0xE0, 0x42, SENSOR_MAC, 0x00, 0x00, mic, payload,
                       DEFAULT_PAIRING_KEY, counter=0)
     return parse_frame(raw)
+
+
+def test_short_resume_0x42_answered_with_connrsp():
+    # inner_type-0 0x42 (2-byte `01 00`) is the sensor's reconnect request
+    # (firmware sub_524ac case 0 -> sub_51742 answers with a ConnRsp, inner_type 1).
+    # The bridge must answer it with a 0x62 ConnRsp — same as a 0x40 discovery —
+    # instead of dead-ending it as "too short" (which strands the sensor).
+    s = _stuck_beaconing_session(watchdog_timeout=0.0)
+    frames, events = s.feed(_craft_short_challenge_frame(), channel=1, now=5.0)
+    assert any(f.data[1] == 0x62 for f in frames), \
+        "short inner_type-0 0x42 resume must be answered with a 0x62 ConnRsp"
 
 
 def test_watchdog_rearms_after_deep_silence():

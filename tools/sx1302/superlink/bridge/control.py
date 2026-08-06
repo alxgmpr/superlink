@@ -13,7 +13,8 @@ Line grammar (whitespace-separated tokens, one command per line):
     ping [HEXDATA]                    -> Ping
     locate                            -> Locate
     reboot                           -> Reboot
-    factory_reset                    -> FactoryReset
+    factory_reset                    -> FactoryReset (unpairs; bridge forgets
+                                        the device once the sensor confirms)
     property_request ID[,ID...]      -> RequestProperty   (ids decimal or 0x..)
     property_set NAME_OR_ID VALUE    -> SetProperty       (profile-encoded)
     property_set_raw ID CH HEXVAL    -> SetPropertyRaw    (verbatim bytes)

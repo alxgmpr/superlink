@@ -1,6 +1,6 @@
 # SuperLink RE — RF memory-extraction handoff
 
-Continues the OpenSuperLink RE. **Read this whole file first**, plus the linked
+Continues the superlink2mqtt RE. **Read this whole file first**, plus the linked
 docs and memories. Prior handoff `docs/ADOPTION_COMMIT_HANDOFF.md` is resolved
 (adoption is solved). Work branch: **`rf-memory-extraction`** (pushed).
 

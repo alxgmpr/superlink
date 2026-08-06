@@ -30,6 +30,7 @@ from superlink import appmsg
 from superlink.bridge.config import RuntimeConfig
 from superlink.bridge.events import (
     DeviceInfoEvent, PropertyEvent, RawMessageEvent, DeviceStateEvent,
+    CommandStatus,
 )
 from superlink.bridge.profiles import ProfileRegistry
 from superlink.bridge.session import DeviceSession, State
@@ -93,6 +94,8 @@ def describe_event(ev) -> str | None:
         val = ev.value if ev.decoded else ev.raw.hex()
         return (f"PROPERTY {ev.name}(id={ev.property_id},ch{ev.channel}) = "
                 f"{val}{(' ' + ev.unit) if ev.unit else ''} raw={ev.raw.hex()}")
+    if isinstance(ev, CommandStatus):
+        return f"STATUS tag=0x{ev.message_tag:02x} status={ev.status_code}"
     if isinstance(ev, RawMessageEvent):
         return f"RAW msgId={ev.message_id} body={ev.body.hex()}"
     return None
@@ -108,7 +111,7 @@ def expected_response(spec: str, ev) -> bool:
     if cmd == "ping":
         return isinstance(ev, RawMessageEvent) and ev.message_id == 5
     # locate/reboot/factory_reset may reply with a status (msgId 1) or nothing.
-    if isinstance(ev, RawMessageEvent) and ev.message_id == 1:
+    if isinstance(ev, CommandStatus):
         return True
     return False
 

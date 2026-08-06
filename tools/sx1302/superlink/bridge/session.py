@@ -174,6 +174,16 @@ class DeviceSession:
         # Property value-size map + known device type used to decode app
         # messages into typed events. Populated as we learn them.
         self._prop_sizes: dict | None = None
+        # Last-seen value per edge-emit property (e.g. BUTTON_PRESSED's u32
+        # last-press uptime) so _observe can fire a discrete press only when the
+        # value advances. Volatile: the first report after (re)start just sets
+        # the baseline, so a reconnect never phantom-fires.
+        self._button_last: dict = {}
+        # Gateway per-packet RSSI/SNR for the frame currently being fed (set by
+        # feed(); None on the legacy path). Emitted as a LinkSignal on decoded
+        # telemetry so HA gets a real-dBm signal instead of the opaque id2.
+        self._rx_rssi: float | None = None
+        self._rx_snr: float | None = None
 
         # DH state (LoRa-side, between us and the sensor)
         self._privkey: bytes | None = None
@@ -255,6 +265,10 @@ class DeviceSession:
     def mac(self) -> bytes | None:
         return self.sensor_mac
 
+    @property
+    def device_type(self) -> int | None:
+        return self._device_type
+
     # ------------------------------------------------------------- lifecycle
     def start(self, now: float = 0.0):
         """Transition from IDLE to BEACONING."""
@@ -291,9 +305,16 @@ class DeviceSession:
         """Queue an app-message body for the next DL command window."""
         self._pending_bodies.append(body)
 
-    def feed(self, frame: SuperLinkFrame | None, channel: int, now: float
+    def feed(self, frame: SuperLinkFrame | None, channel: int, now: float,
+             rssi: float | None = None, snr: float | None = None
              ) -> tuple[list[OutgoingFrame], list]:
-        """Process a parsed frame; return (outgoing frames, events)."""
+        """Process a parsed frame; return (outgoing frames, events).
+
+        rssi/snr are the gateway's per-packet measurements (dBm / dB); when
+        present, a decoded telemetry frame emits a LinkSignal event.
+        """
+        self._rx_rssi = rssi
+        self._rx_snr = snr
         _decoded, frames, events = self._dispatch(frame, channel, now)
         return frames, events
 
@@ -442,7 +463,8 @@ class DeviceSession:
         try:
             events = events_from_app_message(
                 frame.mac, frame.payload, self.profiles,
-                sizes=self._prop_sizes, device_type=self._device_type)
+                sizes=self._prop_sizes, device_type=self._device_type,
+                last_values=self._button_last)
         except Exception as exc:  # noqa: BLE001 - decode is best-effort
             log.debug("app-message decode failed: %s", exc)
             return []
@@ -713,6 +735,14 @@ class DeviceSession:
         # is where the old code fed the RE sweep via _ingest_app_report.
         events += self._observe(frame, channel)
 
+        # Gateway-measured link signal (real dBm/dB) for this decoded telemetry
+        # frame. Only for data frames, and only when feed() supplied RSSI.
+        if self._rx_rssi is not None and frame.dctrl in (0x54, 0x44):
+            from .events import LinkSignal
+            events.append(LinkSignal(mac=frame.mac, rssi_dbm=self._rx_rssi,
+                                     snr=self._rx_snr if self._rx_snr is not None
+                                     else 0.0))
+
         # Post-adoption: the sensor's 0x53 mgmt poll is its COMMAND WINDOW — the
         # only point it listens for and acts on a request. Drain a queued body.
         if frame.dctrl == 0x53 and 1 <= channel <= 8 and self._adopted:
@@ -756,6 +786,33 @@ class DeviceSession:
         mic = compute_mic(header, body)
         return build_frame(0xE0, 0x74, mac, seq_hi, seq_lo, mic, body,
                            self.session_key, counter=ctr)
+
+    def _build_connrsp(self, mac: bytes, channel: int):
+        """Build the 0x62 ConnRsp OutgoingFrame for a discovery/resume on the
+        paired DL channel (or None if channel out of range).
+
+        Reuses the current keypair (self._pubkey) and transport key; no session
+        key is derived here — the sensor completes the handshake with a Challenge.
+        Shared by the 0x40 discovery path and the inner_type-0 0x42 resume path
+        (firmware answers both with a ConnRsp: sub_52090 / sub_51742)."""
+        if not (1 <= channel <= 8):
+            return None
+        from ..hal import DL_FREQ_HZ
+        dl_freq = DL_FREQ_HZ[channel - 1]
+        self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
+        # 0x62 ConnRsp plaintext (41 bytes) per the captured real-gateway frame:
+        # `01 01 | gw_pubkey | 0a 00 02 | 03 fe ff 03`.
+        inner_payload = (b'\x01\x01' + self._pubkey + b'\x0a\x00\x02'
+                         + b'\x03\xfe\xff\x03')
+        header = bytes([0xE0, 0x62]) + mac + bytes([self._tx_seq_hi,
+                                                    self._tx_seq_lo])
+        mic = compute_mic(header, inner_payload)
+        tx_frame = build_frame(0xE0, 0x62, mac, self._tx_seq_hi, self._tx_seq_lo,
+                               mic, inner_payload, self._transport_key, counter=0)
+        log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, pubkey=%s...)",
+                 format_mac(mac), dl_freq / 1e6, len(tx_frame),
+                 self._pubkey[:8].hex())
+        return OutgoingFrame(data=tx_frame, freq_hz=dl_freq, channel=channel)
 
     def _scan_data_counter(self, frame) -> int | None:
         """Find the XSalsa20 nonce counter for a UL data frame by MIC match.
@@ -844,34 +901,9 @@ class DeviceSession:
                     self._on_commit()
 
                 # Build 0x62 ConnectionRsp on paired DL channel.
-                if 1 <= channel <= 8:
-                    dl_freq = DL_FREQ_HZ[channel - 1]
-                    self._tx_seq_hi = (self._tx_seq_hi + 1) & 0xFF
-
-                    # 0x62 ConnRsp plaintext payload (41 bytes), per the
-                    # captured real-gateway frame. Marker `03 fe ff 03` at [37:41].
-                    inner_payload = (
-                        b'\x01\x01'
-                        + self._pubkey
-                        + b'\x0a\x00\x02'
-                        + b'\x03\xfe\xff\x03'
-                    )
-
-                    header = bytes([0xE0, 0x62]) + frame.mac + bytes([
-                        self._tx_seq_hi, self._tx_seq_lo])
-                    mic = compute_mic(header, inner_payload)
-                    tx_frame = build_frame(
-                        0xE0, 0x62, frame.mac,
-                        self._tx_seq_hi, self._tx_seq_lo,
-                        mic, inner_payload,
-                        self._transport_key, counter=0,
-                    )
-                    log.info("TX 0x62 ConnRsp to %s on %.1f MHz (%d bytes, "
-                             "pubkey=%s...)", format_mac(frame.mac),
-                             dl_freq / 1e6, len(tx_frame),
-                             self._pubkey[:8].hex())
-                    return frame, [OutgoingFrame(data=tx_frame, freq_hz=dl_freq,
-                                                 channel=channel)], events
+                of = self._build_connrsp(frame.mac, channel)
+                if of is not None:
+                    return frame, [of], events
 
             return frame, [], events
 
@@ -885,15 +917,27 @@ class DeviceSession:
                       len(frame.payload) if frame.payload else 0,
                       frame.payload.hex() if frame.payload else "<empty>")
             if frame.payload is None or len(frame.payload) < 49:
-                # The 2-byte "resume" 0x42 the bridge can't complete. Count it —
-                # enough of these in a row means the sensor is stuck on the resume
-                # path and the watchdog should re-arm (tick() acts on the count).
+                # inner_type-0 resume: the sensor's short (`01 00`) reconnect
+                # request. Firmware (sub_524ac case 0 -> sub_51742) answers it
+                # with a ConnRsp — same as a 0x40 discovery — so the handshake
+                # re-opens instead of dead-ending here. We do the same. The tally
+                # still increments as a fallback: if repeated resumes never
+                # complete (our ConnRsp unanswered), the watchdog re-arms.
                 self._short_challenge_count += 1
-                log.warning("ConnectionChallenge too short: %d bytes (short-0x42 "
-                            "tally %d/%d)",
+                is_resume = (frame.payload is not None
+                             and len(frame.payload) >= 2
+                             and frame.payload[0] == 0x01
+                             and frame.payload[1] == 0x00)
+                log.warning("ConnectionChallenge short: %d bytes (short-0x42 "
+                            "tally %d/%d)%s",
                             len(frame.payload) if frame.payload else 0,
                             self._short_challenge_count,
-                            self.watchdog_short_challenge_k)
+                            self.watchdog_short_challenge_k,
+                            " — answering resume with ConnRsp" if is_resume else "")
+                if is_resume and self._now >= self._backoff_until:
+                    of = self._build_connrsp(frame.mac, channel)
+                    if of is not None:
+                        return frame, [of], events
                 return frame, [], events
 
             # 0x42 ConnectionChallenge plaintext layout (2026-04-21 keyhook

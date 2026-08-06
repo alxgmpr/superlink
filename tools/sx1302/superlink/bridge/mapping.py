@@ -2,7 +2,8 @@
 from __future__ import annotations
 from .. import appmsg
 from .events import (
-    Event, Action, PropertyEvent, DeviceInfoEvent, RawMessageEvent,
+    Event, Action, PropertyEvent, DeviceInfoEvent, RawMessageEvent, ButtonPressed,
+    CommandStatus,
     SetProperty, SetPropertyRaw, RequestProperty, RequestDeviceInfo,
     Locate, Reboot, FactoryReset, Ping,
 )
@@ -10,7 +11,8 @@ from .profiles import ProfileRegistry
 
 
 def events_from_app_message(mac, body, profiles: ProfileRegistry,
-                            sizes=None, device_type=None) -> list[Event]:
+                            sizes=None, device_type=None,
+                            last_values=None) -> list[Event]:
     if len(body) < 2:
         return []
     msg = appmsg.decode_message(body, sizes=sizes)
@@ -32,7 +34,31 @@ def events_from_app_message(mac, body, profiles: ProfileRegistry,
                 mac=mac, property_id=pid, name=profiles.name(pid),
                 channel=p["channel"], raw=raw, value=value, unit=unit,
                 decoded=decoded))
+            # Extra fields sharing this property's payload (e.g. BATTERY also
+            # carries the measured millivolts). Same property_id, own name.
+            for x_name, x_value, x_unit in profiles.extras(pid, raw, device_type):
+                out.append(PropertyEvent(
+                    mac=mac, property_id=pid, name=x_name,
+                    channel=p["channel"], raw=raw, value=x_value, unit=x_unit,
+                    decoded=True))
+            # Edge-emit (e.g. BUTTON_PRESSED): a monotonic last-press uptime
+            # advancing means a fresh press. The first value we ever see only
+            # sets the baseline — no press — so a reconnect/restart doesn't
+            # phantom-fire. Needs a caller-owned `last_values` dict to persist
+            # the baseline across calls.
+            if (decoded and last_values is not None
+                    and profiles.edge(pid, device_type) == "increase"):
+                prev = last_values.get(pid)
+                if prev is not None and value > prev:
+                    out.append(ButtonPressed(
+                        mac=mac, property_id=pid, name=profiles.name(pid),
+                        value=value))
+                last_values[pid] = value
         return out
+
+    if msg_id == appmsg.MessageId.REQUEST_STATUS_RESPONSE:
+        return [CommandStatus(mac=mac, message_tag=msg["messageTag"],
+                              status_code=msg["statusCode"])]
 
     return [RawMessageEvent(mac=mac, message_id=msg_id, body=bytes(body[2:]))]
 

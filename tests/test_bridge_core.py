@@ -19,7 +19,7 @@ class FakeSession:
         self.started = False
     def start(self, now):
         self.started = True
-    def feed(self, frame, channel, now):
+    def feed(self, frame, channel, now, rssi=None, snr=None):
         ev = PropertyEvent(mac=self.mac, property_id=3, name="BATTERY",
                            channel=0, raw=b"\x64", value=100, unit="%", decoded=True)
         return [], [ev]
@@ -93,3 +93,178 @@ def test_submit_setproperty_queues_body_on_session():
     # messageTag is now a non-zero running counter (tag 1 for the first command),
     # not 0 — the sensor rejects tag-0 command bodies.
     assert session.queued and session.queued[0] == bytes([14, 1, 14, 0, 0x01])
+
+
+# --- factory reset / unpair teardown ---
+
+class StatusSession(FakeSession):
+    """FakeSession whose feed() emits whatever events are put in `to_emit`."""
+    def __init__(self, record):
+        super().__init__(record)
+        self.to_emit = []
+    def feed(self, frame, channel, now, rssi=None, snr=None):
+        evs, self.to_emit = self.to_emit, []
+        return [], evs
+    def tick(self, now):
+        evs, self.to_emit = self.to_emit, []
+        return [], evs
+
+
+def _adopted_core():
+    """Core with MAC already adopted and a StatusSession attached."""
+    store = InMemoryDeviceStore()
+    store.save(DeviceRecord(mac=MAC, adopted=True))
+    core = BridgeCore(store, ProfileRegistry.load(),
+                      session_factory=StatusSession)
+    return core, store, core._sessions[MAC]
+
+
+def test_factory_reset_confirmed_removes_device():
+    """The real controller waits for the tag-matched status before issuing
+    removeDevice (captures/live/bridge_adopt_fresh_pass2_DECODED.txt)."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC not in core._sessions
+    assert store.load_all() == []
+    removed = [e for e in seen if isinstance(e, DeviceRemoved)]
+    assert len(removed) == 1
+    assert removed[0].mac == MAC and removed[0].reason == "factory_reset"
+
+
+def test_factory_reset_wrong_tag_does_not_remove():
+    """A status closing some other command must not unpair the device."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag ^ 0xFF,
+                                  status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_factory_reset_nonzero_status_does_not_remove():
+    """A failed reset leaves the record alone: a stale record is recoverable,
+    a wrongly-deleted one needs a physical re-pair."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=3)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_status_without_pending_reset_does_not_remove():
+    """Statuses close every command (locate, reboot, property_set). Only one
+    with a pending FACTORY_RESET may tear the device down."""
+    from superlink.bridge.events import CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=1, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_factory_reset_confirmed_during_tick_does_not_raise():
+    """tick() iterates the session dict; teardown mutates it mid-loop unless
+    the loop walks a snapshot."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.tick(now=5.0)
+    assert MAC not in core._sessions
+    assert any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_removed_device_is_rediscoverable():
+    """After a reset the sensor beacons again as unadopted; with the record
+    gone the bridge must announce it as a fresh discovery, not route it to a
+    dead session."""
+    from superlink.bridge.events import FactoryReset, CommandStatus
+    core, store, sess = _adopted_core()
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    seen = []
+    core.subscribe(seen.append)
+    core.feed(UNKNOWN_FRAME, channel=1, now=6.0)
+    assert any(isinstance(e, DeviceDiscovered) for e in seen)
+
+
+def test_stale_pending_reset_not_confirmed_by_unrelated_later_command():
+    """messageTag is a single counter shared across all devices and wraps at
+    255. If a FactoryReset's status is lost (no timeout exists to clear the
+    pending entry — none should, per the confirm-only design), a later
+    unrelated command for the same mac must not be mistaken for the reset's
+    confirmation just because the shared counter reused its tag. submit()
+    clears any pending reset for a mac on every submit for that mac, so only
+    the most recently submitted command's tag is ever "live"."""
+    from superlink.bridge.events import (
+        FactoryReset, Locate, CommandStatus, DeviceRemoved,
+    )
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    # The FactoryReset's status never arrives. Force the shared tag counter
+    # to land on the same value for the next command, rather than looping
+    # submissions 255 times to reach a real wraparound.
+    core._cmd_tag = tag - 1
+    core.submit(Locate(mac=MAC))
+    reused_tag = sess.queued[1][1]
+    assert reused_tag == tag  # confirms the forced collision actually happened
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=reused_tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_pending_reset_survives_unrelated_command_with_a_different_tag():
+    """The invalidation guarded against aliasing is narrowed to an exact tag
+    collision (finding 3). A pending FACTORY_RESET's status reply can take a
+    full sensor window (seconds to minutes); an unrelated command submitted
+    for the same mac in that window (a second button press, a Locate/Refresh)
+    must not disarm it as long as its tag doesn't collide with the pending
+    one. The reset must still be confirmed when its status finally arrives."""
+    from superlink.bridge.events import (
+        FactoryReset, Locate, CommandStatus, DeviceRemoved,
+    )
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    core.submit(Locate(mac=MAC))          # unrelated command, distinct tag
+    locate_tag = sess.queued[1][1]
+    assert locate_tag != tag              # no collision this time
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC not in core._sessions
+    assert store.load_all() == []
+    removed = [e for e in seen if isinstance(e, DeviceRemoved)]
+    assert len(removed) == 1
+    assert removed[0].mac == MAC and removed[0].reason == "factory_reset"

@@ -128,6 +128,25 @@ Variable. 2-byte header + opaque `data: Buffer`. Used for liveness.
 
 Header only — 2 bytes, no payload.
 
+`FACTORY_RESET` unpairs the device. The messageTag MUST be non-zero — a `0700`
+body is silently ignored (no ACK, no reset; verified on hardware 2026-07-25).
+
+The sensor confirms with a `REQUEST_STATUS_RESPONSE` (msgId 1) echoing the
+command's tag, in a **later window** than the command itself:
+
+    DL dctrl=74  body=0735      FACTORY_RESET, tag 0x35
+    DL dctrl=54  ...
+    UL dctrl=54  body=013500    REQUEST_STATUS_RESPONSE, tag 0x35, status 0
+
+The controller removes the device from its registry only after that status
+(`captures/live/bridge_adopt_fresh_pass2_DECODED.txt`, JSON 11 `removeDevice`).
+superlink2mqtt mirrors this: `BridgeCore` deletes the record and emits
+`DeviceRemoved` on a tag-matched status 0, and does nothing on a mismatch or a
+non-zero status — except that a non-zero status also clears the pending-reset
+entry for that tag, so a later status that somehow still confirmed the same
+reset would no longer be recognized. After the reset the sensor beacons again
+as unadopted and can be re-paired normally.
+
 ### `DEVICE_INFO_REPORT`
 
 Variable, ≥31 bytes. Layout (from decodeMessage):

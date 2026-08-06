@@ -33,6 +33,25 @@ class PropertyEvent(Event):
 
 
 @dataclass(frozen=True)
+class ButtonPressed(Event):
+    """A discrete button press, derived from a monotonic last-press-uptime
+    property (id19) advancing. Momentary: fires once per detected edge."""
+    mac: bytes
+    property_id: int
+    name: str
+    value: int
+
+
+@dataclass(frozen=True)
+class LinkSignal(Event):
+    """Gateway-measured link quality for a received frame: RSSI in dBm and SNR
+    in dB, straight off the SX1302 (real units, unlike the sensor's opaque id2)."""
+    mac: bytes
+    rssi_dbm: float
+    snr: float
+
+
+@dataclass(frozen=True)
 class DeviceInfoEvent(Event):
     mac: bytes
     device_type: int
@@ -54,6 +73,27 @@ class RawMessageEvent(Event):
     mac: bytes
     message_id: int
     body: bytes
+
+
+@dataclass(frozen=True)
+class CommandStatus(Event):
+    """REQUEST_STATUS_RESPONSE (msgId 1): the sensor's reply to a command,
+    echoing that command's messageTag. statusCode 0 = success.
+
+    The reply arrives in a *later* window than the command it answers (a
+    FACTORY_RESET goes out on 0x74; its status comes back on a subsequent
+    0x54), so consumers must correlate on message_tag, not on ordering."""
+    mac: bytes
+    message_tag: int
+    status_code: int
+
+
+@dataclass(frozen=True)
+class DeviceRemoved(Event):
+    """The bridge has forgotten a device: record deleted, session torn down.
+    Consumers should retract any state they published for it."""
+    mac: bytes
+    reason: str          # "factory_reset"
 
 
 @dataclass(frozen=True)

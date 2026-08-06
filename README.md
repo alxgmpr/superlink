@@ -1,11 +1,20 @@
-# OpenSuperLink
+# superlink2mqtt
 
-**Goal:** build an open-source gateway for Ubiquiti SuperLink sensors
-so the sensors can be used on any hardware, with open data, free of the
-UniFi controller. See **[docs/OPEN_GATEWAY_PLAN.md](docs/OPEN_GATEWAY_PLAN.md)**
-for the current state, blockers, and path to full pairing.
+**An open gateway that puts Ubiquiti SuperLink sensors on MQTT** — pair them
+directly, publish their state, and get Home Assistant entities via MQTT
+discovery, with no UniFi controller anywhere in the loop.
 
-Reverse engineering of Ubiquiti's proprietary SuperLink protocol — a LoRa-based sub-GHz radio system on 915 MHz (US ISM band). Listening to packets using a Heltec v3.
+It runs on a Raspberry Pi with an SX1302 concentrator: the bridge pairs with a
+factory-default sensor over the air, decodes its application-layer reports, and
+maps them to HA entities (door/motion/leak/tamper, battery, signal, button
+presses) plus command buttons (locate, reboot, refresh, clear tamper). See
+**[docs/OPEN_GATEWAY_PLAN.md](docs/OPEN_GATEWAY_PLAN.md)** for current state and
+open work.
+
+The protocol underneath is Ubiquiti's proprietary SuperLink — a LoRa-based
+sub-GHz radio system on 915 MHz (US ISM band), reverse engineered from firmware
+and over-the-air captures. The rest of this README is that protocol
+documentation; packet sniffing also works standalone on a Heltec v3.
 
 <img width="1028" height="781" alt="image" src="https://github.com/user-attachments/assets/e16ffbb9-7369-461f-b2e1-0df24a7cf506" />
 
@@ -146,12 +155,13 @@ sweep harnesses for tuning DL responses.
 ## Repository Structure
 
 ```
-superlink/
+superlink2mqtt/
 ├── docs/protocol/          — frame format, crypto, channel plan, OTA captures
 ├── docs/teardowns/         — hardware component identification
 ├── tools/sniffer/          — PlatformIO project: Heltec V3 + SX1262 packet sniffer
 ├── tools/sx1302/           — SX1302-based Pi gateway: sniffer, emulator, sweeps
 │   └── superlink/          — Python package (hal, decoder, crypto, gateway, cli)
+│       └── bridge/         — MQTT bridge: sessions, entities, HA discovery
 ├── tools/emulator/         — sensor-side emulator scaffolding
 ├── tools/keyhook/          — runtime key capture helper for lorabrd
 ├── tools/decoder/          — placeholder for Wireshark dissector
