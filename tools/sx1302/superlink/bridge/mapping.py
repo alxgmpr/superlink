@@ -3,6 +3,7 @@ from __future__ import annotations
 from .. import appmsg
 from .events import (
     Event, Action, PropertyEvent, DeviceInfoEvent, RawMessageEvent, ButtonPressed,
+    CommandStatus,
     SetProperty, SetPropertyRaw, RequestProperty, RequestDeviceInfo,
     Locate, Reboot, FactoryReset, Ping,
 )
@@ -54,6 +55,10 @@ def events_from_app_message(mac, body, profiles: ProfileRegistry,
                         value=value))
                 last_values[pid] = value
         return out
+
+    if msg_id == appmsg.MessageId.REQUEST_STATUS_RESPONSE:
+        return [CommandStatus(mac=mac, message_tag=msg["messageTag"],
+                              status_code=msg["statusCode"])]
 
     return [RawMessageEvent(mac=mac, message_id=msg_id, body=bytes(body[2:]))]
 

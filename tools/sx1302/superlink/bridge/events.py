@@ -76,6 +76,19 @@ class RawMessageEvent(Event):
 
 
 @dataclass(frozen=True)
+class CommandStatus(Event):
+    """REQUEST_STATUS_RESPONSE (msgId 1): the sensor's reply to a command,
+    echoing that command's messageTag. statusCode 0 = success.
+
+    The reply arrives in a *later* window than the command it answers (a
+    FACTORY_RESET goes out on 0x74; its status comes back on a subsequent
+    0x54), so consumers must correlate on message_tag, not on ordering."""
+    mac: bytes
+    message_tag: int
+    status_code: int
+
+
+@dataclass(frozen=True)
 class AdoptDevice(Action):
     mac: bytes
 

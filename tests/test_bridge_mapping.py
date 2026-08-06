@@ -101,3 +101,24 @@ def test_battery_report_also_emits_voltage(reg):
         ("BATTERY_VOLTAGE", pytest.approx(2.976), "V"),
     ]
     assert all(e.property_id == 3 and e.decoded for e in evs)
+
+
+def test_status_response_becomes_command_status(reg):
+    """msgId 1 is the sensor's reply to a command, echoing that command's
+    messageTag. Ground truth: body `013500` closed the FACTORY_RESET tagged
+    0x35 in captures/live/bridge_adopt_fresh_pass2_DECODED.txt."""
+    from superlink.bridge.events import CommandStatus
+    evs = events_from_app_message(MAC, bytes.fromhex("013500"), reg)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert isinstance(ev, CommandStatus)
+    assert ev.mac == MAC
+    assert ev.message_tag == 0x35
+    assert ev.status_code == 0
+
+
+def test_status_response_reports_nonzero_status(reg):
+    from superlink.bridge.events import CommandStatus
+    evs = events_from_app_message(MAC, bytes.fromhex("01420b"), reg)
+    assert isinstance(evs[0], CommandStatus)
+    assert evs[0].message_tag == 0x42 and evs[0].status_code == 0x0b
