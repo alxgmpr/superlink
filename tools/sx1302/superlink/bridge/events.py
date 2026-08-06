@@ -89,6 +89,14 @@ class CommandStatus(Event):
 
 
 @dataclass(frozen=True)
+class DeviceRemoved(Event):
+    """The bridge has forgotten a device: record deleted, session torn down.
+    Consumers should retract any state they published for it."""
+    mac: bytes
+    reason: str          # "factory_reset"
+
+
+@dataclass(frozen=True)
 class AdoptDevice(Action):
     mac: bytes
 

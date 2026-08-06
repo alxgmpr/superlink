@@ -93,3 +93,121 @@ def test_submit_setproperty_queues_body_on_session():
     # messageTag is now a non-zero running counter (tag 1 for the first command),
     # not 0 — the sensor rejects tag-0 command bodies.
     assert session.queued and session.queued[0] == bytes([14, 1, 14, 0, 0x01])
+
+
+# --- factory reset / unpair teardown ---
+
+class StatusSession(FakeSession):
+    """FakeSession whose feed() emits whatever events are put in `to_emit`."""
+    def __init__(self, record):
+        super().__init__(record)
+        self.to_emit = []
+    def feed(self, frame, channel, now, rssi=None, snr=None):
+        evs, self.to_emit = self.to_emit, []
+        return [], evs
+    def tick(self, now):
+        evs, self.to_emit = self.to_emit, []
+        return [], evs
+
+
+def _adopted_core():
+    """Core with MAC already adopted and a StatusSession attached."""
+    store = InMemoryDeviceStore()
+    store.save(DeviceRecord(mac=MAC, adopted=True))
+    core = BridgeCore(store, ProfileRegistry.load(),
+                      session_factory=StatusSession)
+    return core, store, core._sessions[MAC]
+
+
+def test_factory_reset_confirmed_removes_device():
+    """The real controller waits for the tag-matched status before issuing
+    removeDevice (captures/live/bridge_adopt_fresh_pass2_DECODED.txt)."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC not in core._sessions
+    assert store.load_all() == []
+    removed = [e for e in seen if isinstance(e, DeviceRemoved)]
+    assert len(removed) == 1
+    assert removed[0].mac == MAC and removed[0].reason == "factory_reset"
+
+
+def test_factory_reset_wrong_tag_does_not_remove():
+    """A status closing some other command must not unpair the device."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag ^ 0xFF,
+                                  status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_factory_reset_nonzero_status_does_not_remove():
+    """A failed reset leaves the record alone: a stale record is recoverable,
+    a wrongly-deleted one needs a physical re-pair."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=3)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_status_without_pending_reset_does_not_remove():
+    """Statuses close every command (locate, reboot, property_set). Only one
+    with a pending FACTORY_RESET may tear the device down."""
+    from superlink.bridge.events import CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=1, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_factory_reset_confirmed_during_tick_does_not_raise():
+    """tick() iterates the session dict; teardown mutates it mid-loop unless
+    the loop walks a snapshot."""
+    from superlink.bridge.events import FactoryReset, CommandStatus, DeviceRemoved
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.tick(now=5.0)
+    assert MAC not in core._sessions
+    assert any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_removed_device_is_rediscoverable():
+    """After a reset the sensor beacons again as unadopted; with the record
+    gone the bridge must announce it as a fresh discovery, not route it to a
+    dead session."""
+    from superlink.bridge.events import FactoryReset, CommandStatus
+    core, store, sess = _adopted_core()
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    seen = []
+    core.subscribe(seen.append)
+    core.feed(UNKNOWN_FRAME, channel=1, now=6.0)
+    assert any(isinstance(e, DeviceDiscovered) for e in seen)

@@ -1,15 +1,19 @@
 """BridgeCore: pure multi-device orchestrator over DeviceSessions."""
 from __future__ import annotations
+import logging
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from ..decoder import parse_frame
 from .events import (
     Event, Action, AdoptDevice, DeviceDiscovered, DeviceStateEvent,
+    CommandStatus, DeviceRemoved, FactoryReset,
 )
 from .mapping import action_to_body
 from .profiles import ProfileRegistry
 from .store import DeviceStore, DeviceRecord
+
+log = logging.getLogger("superlink.core")
 
 
 @dataclass
@@ -52,6 +56,10 @@ class BridgeCore:
         # tag which the sensor echoes in its status reply. Start at 0 so the
         # first command uses tag 1.
         self._cmd_tag = 0
+        # mac -> messageTag of a FACTORY_RESET awaiting its status reply. The
+        # sensor answers in a later window, so the teardown is event-driven:
+        # only a tag-matched status with code 0 removes the device.
+        self._pending_reset: dict[bytes, int] = {}
         for record in store.load_all():
             self._sessions[record.mac] = session_factory(record)
 
@@ -87,6 +95,7 @@ class BridgeCore:
         if session is not None:
             self._ensure_started(mac, session, now)
             frames, events = session.feed(frame, channel, now, rssi=rssi, snr=snr)
+            self._intercept(events)
             self._emit(events)
             return list(frames)
         if mac in self._discovered:
@@ -109,12 +118,46 @@ class BridgeCore:
         self._sessions[mac] = self._factory(record)
         self._emit([DeviceStateEvent(mac=mac, state="adopting")])
 
+    def _intercept(self, events) -> None:
+        """Act on events before they reach subscribers.
+
+        A FACTORY_RESET is confirmed by a REQUEST_STATUS_RESPONSE echoing the
+        command's messageTag with status 0 — the same signal the real
+        controller waits for before issuing removeDevice. Anything else (wrong
+        tag, non-zero status) leaves the record alone: a stale record is
+        recoverable, a wrongly-deleted one needs a physical re-pair.
+        """
+        for ev in events:
+            if not isinstance(ev, CommandStatus):
+                continue
+            pending = self._pending_reset.get(ev.mac)
+            if pending is None or ev.message_tag != pending:
+                continue
+            if ev.status_code != 0:
+                log.warning("factory reset on %s failed: status=%d "
+                            "(keeping device record)",
+                            ev.mac.hex(), ev.status_code)
+                self._pending_reset.pop(ev.mac, None)
+                continue
+            self._remove_device(ev.mac, "factory_reset")
+
+    def _remove_device(self, mac: bytes, reason: str) -> None:
+        """Forget a device entirely: session, start-state, and stored record."""
+        self._sessions.pop(mac, None)
+        self._started.discard(mac)
+        self._discovered.pop(mac, None)
+        self._pending_reset.pop(mac, None)
+        self.store.delete(mac)
+        log.info("removed device %s (%s)", mac.hex(), reason)
+        self._emit([DeviceRemoved(mac=mac, reason=reason)])
+
     def tick(self, now: float) -> list[OutgoingFrame]:
         out: list[OutgoingFrame] = []
-        for mac, session in self._sessions.items():
+        for mac, session in list(self._sessions.items()):
             self._ensure_started(mac, session, now)
             frames, events = session.tick(now)
             out.extend(frames)
+            self._intercept(events)
             self._emit(events)
         return out
 
@@ -129,3 +172,5 @@ class BridgeCore:
         self._cmd_tag = (self._cmd_tag % 0xFF) + 1  # 1..255, never 0
         session.queue_body(
             action_to_body(action, self.profiles, tag=self._cmd_tag))
+        if isinstance(action, FactoryReset):
+            self._pending_reset[action.mac] = self._cmd_tag
