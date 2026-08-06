@@ -14,7 +14,7 @@
 
 - All bridge code lives in `tools/sx1302/superlink/`. `tests/conftest.py` adds `tools/sx1302` to `sys.path`, so tests import as `superlink.bridge.*`.
 - Run tests from the repo root with the venv active: `source .venv/bin/activate && pytest tests/ -v`.
-- **Accepted-red baseline:** 2 tests in `tests/test_gateway.py` fail on `main` (the ConnChallenge pubkey-offset `[3:35]` vs `[13:45]` question). Do NOT fix them as part of this work. Every *other* test must pass.
+- **Test baseline: fully green.** An earlier draft of this plan claimed 2 accepted-red ConnChallenge tests in `tests/test_gateway.py`; that is stale — verified 2026-08-05, `test_gateway.py` passes 18/18 and the full suite is green on this branch. Any failing test is a real regression.
 - The sensor rejects a tag-0 command body — a tag-0 `FACTORY_RESET` (`0700`) is silently ignored, no ACK and no reset (verified on hardware 2026-07-25). `BridgeCore._cmd_tag` already guarantees 1..255; do not change it.
 - Teardown is **confirm-only**: no fallback timeout. A tag mismatch or a non-zero status code must leave the device record intact.
 - Ground-truth reference capture: `captures/live/bridge_adopt_fresh_pass2_DECODED.txt`. The real controller sends `0735`, receives `013500`, then issues `removeDevice`.
