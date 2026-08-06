@@ -241,3 +241,30 @@ def test_stale_pending_reset_not_confirmed_by_unrelated_later_command():
     assert MAC in core._sessions
     assert len(store.load_all()) == 1
     assert not any(isinstance(e, DeviceRemoved) for e in seen)
+
+
+def test_pending_reset_survives_unrelated_command_with_a_different_tag():
+    """The invalidation guarded against aliasing is narrowed to an exact tag
+    collision (finding 3). A pending FACTORY_RESET's status reply can take a
+    full sensor window (seconds to minutes); an unrelated command submitted
+    for the same mac in that window (a second button press, a Locate/Refresh)
+    must not disarm it as long as its tag doesn't collide with the pending
+    one. The reset must still be confirmed when its status finally arrives."""
+    from superlink.bridge.events import (
+        FactoryReset, Locate, CommandStatus, DeviceRemoved,
+    )
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    core.submit(Locate(mac=MAC))          # unrelated command, distinct tag
+    locate_tag = sess.queued[1][1]
+    assert locate_tag != tag              # no collision this time
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC not in core._sessions
+    assert store.load_all() == []
+    removed = [e for e in seen if isinstance(e, DeviceRemoved)]
+    assert len(removed) == 1
+    assert removed[0].mac == MAC and removed[0].reason == "factory_reset"

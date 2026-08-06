@@ -11,7 +11,7 @@ from .config import RuntimeConfig
 from .core import BridgeCore, OutgoingFrame
 from .events import (
     Event, DeviceDiscovered, DeviceStateEvent, PropertyEvent, DeviceInfoEvent,
-    AdoptDevice, SetPropertyRaw,
+    AdoptDevice, SetPropertyRaw, DeviceRemoved,
 )
 from .profiles import ProfileRegistry
 from .session import DeviceSession
@@ -93,6 +93,11 @@ class BridgeRuntime:
                     self.store.save(session.to_record())
                     log.info("persisted device-info (prop_sizes) for %s",
                              event.mac.hex())
+        elif isinstance(event, DeviceRemoved):
+            # BridgeCore already dropped its own session and store record; the
+            # runtime's copy must go too, or the shutdown flush in run()'s
+            # `finally` block resurrects the removed device on the next save.
+            self._sessions.pop(event.mac, None)
         # Every event fans out to sinks (B's MQTT publisher attaches here).
         for sink in self._sinks:
             sink(event)

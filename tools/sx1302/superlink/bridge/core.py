@@ -95,8 +95,14 @@ class BridgeCore:
         if session is not None:
             self._ensure_started(mac, session, now)
             frames, events = session.feed(frame, channel, now, rssi=rssi, snr=snr)
-            self._intercept(events)
+            # _emit before _intercept: subscribers must see the CommandStatus
+            # (and any event sharing its batch, e.g. a LinkSignal) before the
+            # DeviceRemoved it triggers. Otherwise MqttBridge retracts the
+            # device's topics and clears its guards first, then republishes
+            # discovery/state for the very LinkSignal that arrives "after" —
+            # a ghost entity nothing will ever retract.
             self._emit(events)
+            self._intercept(events)
             return list(frames)
         if mac in self._discovered:
             return []  # already announced; awaiting AdoptDevice / auto_adopt
@@ -157,8 +163,8 @@ class BridgeCore:
             self._ensure_started(mac, session, now)
             frames, events = session.tick(now)
             out.extend(frames)
-            self._intercept(events)
             self._emit(events)
+            self._intercept(events)
         return out
 
     def submit(self, action: Action) -> None:
@@ -174,9 +180,17 @@ class BridgeCore:
             action_to_body(action, self.profiles, tag=self._cmd_tag))
         # The tag space is shared across all devices and wraps at 255, so a
         # stale pending-reset tag could otherwise be "confirmed" by an
-        # unrelated later command that happens to land on the same tag.
-        # Every submit for this mac invalidates any prior pending reset;
-        # only a FactoryReset re-arms it, and only with the tag just used.
-        self._pending_reset.pop(action.mac, None)
+        # unrelated later command that happens to land on the same tag. Only
+        # invalidate the pending reset when the new command actually reuses
+        # its tag -- that's the one case an aliased status would wrongly
+        # confirm it. A pending reset's status can take a full sensor window
+        # (seconds to minutes) to arrive, so invalidating on *every* later
+        # submit (a second button press, a Locate/Refresh) would silently
+        # disarm a reset the sensor still goes on to perform.
+        if self._pending_reset.get(action.mac) == self._cmd_tag:
+            log.warning("pending factory reset on %s disarmed: tag %d reused "
+                        "by a later command before its status arrived",
+                        action.mac.hex(), self._cmd_tag)
+            self._pending_reset.pop(action.mac)
         if isinstance(action, FactoryReset):
             self._pending_reset[action.mac] = self._cmd_tag
