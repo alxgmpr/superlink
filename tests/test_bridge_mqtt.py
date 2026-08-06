@@ -225,3 +225,28 @@ def test_active_state_republishes_availability_online():
     assert client.find(f"superlink/{MH}/availability") == "offline"
     bridge.on_event(DeviceStateEvent(mac=MAC, state="active"))
     assert client.find(f"superlink/{MH}/availability") == "online"
+
+
+# --- factory reset / unpair button ---
+
+def test_factory_reset_button_submits_action():
+    from superlink.bridge.events import FactoryReset
+    rt, client, bridge = _bridge()
+    got = []
+    rt.submit_action = lambda a: got.append(a)
+    bridge.start()
+    bridge._on_message(f"superlink/{MH}/factory_reset/press", "PRESS")
+    assert len(got) == 1 and isinstance(got[0], FactoryReset)
+    assert got[0].mac == MAC
+
+
+def test_factory_reset_button_discovery_published():
+    from superlink.bridge.events import DeviceStateEvent
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    cfg = client.find(f"homeassistant/button/{MH}_factory_reset/config")
+    assert cfg is not None
+    payload = json.loads(cfg)
+    assert payload["command_topic"] == f"superlink/{MH}/factory_reset/press"
+    assert payload["name"] == "Factory reset"

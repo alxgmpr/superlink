@@ -12,7 +12,7 @@ from .entities import (
 from .events import (
     Event, PropertyEvent, DeviceInfoEvent, DeviceDiscovered, DeviceStateEvent,
     ButtonPressed, LinkSignal, SetProperty, SetPropertyRaw, AdoptDevice, Locate,
-    Reboot, RequestDeviceInfo,
+    Reboot, RequestDeviceInfo, FactoryReset,
 )
 
 # Command-button name -> factory building the Action from a device MAC.
@@ -24,6 +24,9 @@ _BUTTON_ACTIONS = {
     # dashboard action). Verbatim raw so it needs no profile type for id22.
     "clear_tamper": lambda mac: SetPropertyRaw(mac=mac, property_id=22,
                                                channel=0, raw=b"\x01"),
+    # Unpairs the sensor. The bridge forgets the device once the sensor
+    # confirms with a tag-matched status reply (BridgeCore._intercept).
+    "factory_reset": lambda mac: FactoryReset(mac=mac),
 }
 
 log = logging.getLogger("superlink.mqtt")

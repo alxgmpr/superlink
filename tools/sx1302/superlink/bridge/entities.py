@@ -29,6 +29,7 @@ COMMAND_BUTTONS: dict[str, dict] = {
     "reboot":  {"name": "Reboot", "device_class": "restart", "icon": "mdi:restart"},
     "refresh": {"name": "Refresh info", "icon": "mdi:refresh"},
     "clear_tamper": {"name": "Clear tamper", "icon": "mdi:shield-refresh"},
+    "factory_reset": {"name": "Factory reset", "icon": "mdi:link-off"},
 }
 
 
