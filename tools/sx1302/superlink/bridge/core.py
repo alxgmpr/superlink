@@ -172,5 +172,11 @@ class BridgeCore:
         self._cmd_tag = (self._cmd_tag % 0xFF) + 1  # 1..255, never 0
         session.queue_body(
             action_to_body(action, self.profiles, tag=self._cmd_tag))
+        # The tag space is shared across all devices and wraps at 255, so a
+        # stale pending-reset tag could otherwise be "confirmed" by an
+        # unrelated later command that happens to land on the same tag.
+        # Every submit for this mac invalidates any prior pending reset;
+        # only a FactoryReset re-arms it, and only with the tag just used.
+        self._pending_reset.pop(action.mac, None)
         if isinstance(action, FactoryReset):
             self._pending_reset[action.mac] = self._cmd_tag

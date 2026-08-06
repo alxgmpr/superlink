@@ -211,3 +211,33 @@ def test_removed_device_is_rediscoverable():
     core.subscribe(seen.append)
     core.feed(UNKNOWN_FRAME, channel=1, now=6.0)
     assert any(isinstance(e, DeviceDiscovered) for e in seen)
+
+
+def test_stale_pending_reset_not_confirmed_by_unrelated_later_command():
+    """messageTag is a single counter shared across all devices and wraps at
+    255. If a FactoryReset's status is lost (no timeout exists to clear the
+    pending entry — none should, per the confirm-only design), a later
+    unrelated command for the same mac must not be mistaken for the reset's
+    confirmation just because the shared counter reused its tag. submit()
+    clears any pending reset for a mac on every submit for that mac, so only
+    the most recently submitted command's tag is ever "live"."""
+    from superlink.bridge.events import (
+        FactoryReset, Locate, CommandStatus, DeviceRemoved,
+    )
+    core, store, sess = _adopted_core()
+    seen = []
+    core.subscribe(seen.append)
+    core.submit(FactoryReset(mac=MAC))
+    tag = sess.queued[0][1]
+    # The FactoryReset's status never arrives. Force the shared tag counter
+    # to land on the same value for the next command, rather than looping
+    # submissions 255 times to reach a real wraparound.
+    core._cmd_tag = tag - 1
+    core.submit(Locate(mac=MAC))
+    reused_tag = sess.queued[1][1]
+    assert reused_tag == tag  # confirms the forced collision actually happened
+    sess.to_emit = [CommandStatus(mac=MAC, message_tag=reused_tag, status_code=0)]
+    core.feed(UNKNOWN_FRAME, channel=1, now=5.0)
+    assert MAC in core._sessions
+    assert len(store.load_all()) == 1
+    assert not any(isinstance(e, DeviceRemoved) for e in seen)
