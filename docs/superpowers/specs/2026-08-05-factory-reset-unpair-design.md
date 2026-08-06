@@ -167,6 +167,14 @@ inherits the teardown.
 - `tests/test_bridge_mqtt.py` — a `factory_reset` press submits a
   `FactoryReset`; `DeviceRemoved` publishes empty retained payloads to the
   device's discovery topics and clears the done-sets.
+- `tests/test_bridge_core.py` — a pending reset survives an unrelated later
+  command whose tag does not collide, and is still confirmed when its status
+  arrives (narrowed invalidation, see whole-branch review 2026-08-05).
+- `tests/test_bridge_mqtt_wiring.py` — cross-layer regression: adopts a
+  device, submits `FactoryReset`, feeds a single `[CommandStatus, LinkSignal]`
+  batch (the real on-wire shape) through `BridgeCore.feed()`, and asserts the
+  store is empty, `BridgeRuntime._sessions` no longer holds the mac, and no
+  non-empty retained topic (including `SIGNAL`) remains.
 
 ## Known gap
 
@@ -179,3 +187,20 @@ restart the daemon.
 
 Deliberately not built now. If it shows up in practice, add a `--reset-timeout`
 escape hatch that tears down after N seconds regardless.
+
+Two more accepted-not-fixed consequences, found in the whole-branch review
+(2026-08-05) and left as-is rather than fixed:
+
+- **Tag-collision disarm.** `submit()` only clears a pending reset's tag when
+  a later command for the same mac reuses that exact tag (the aliasing case a
+  status match could otherwise mistake for confirmation). If that collision
+  happens — the shared messageTag counter wraps at 255 — the pending reset is
+  disarmed and can no longer be confirmed even if the sensor goes on to
+  perform it anyway. No timeout exists to re-arm or otherwise recover it; the
+  record is kept, per the confirm-only design.
+- **Retraction only covers this process's lifetime.** `MqttBridge._retained`
+  is in-memory, populated only by topics published since the last daemon
+  restart. A property that hasn't reported since restart (e.g. `BATTERY` on a
+  device that hasn't sent one yet) has no entry in `_retained`, so
+  `_retract_device` never clears its retained discovery/state topics — they
+  and the corresponding HA entity linger after an unpair.

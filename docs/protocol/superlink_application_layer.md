@@ -142,8 +142,10 @@ The controller removes the device from its registry only after that status
 (`captures/live/bridge_adopt_fresh_pass2_DECODED.txt`, JSON 11 `removeDevice`).
 superlink2mqtt mirrors this: `BridgeCore` deletes the record and emits
 `DeviceRemoved` on a tag-matched status 0, and does nothing on a mismatch or a
-non-zero status. After the reset the sensor beacons again as unadopted and can
-be re-paired normally.
+non-zero status — except that a non-zero status also clears the pending-reset
+entry for that tag, so a later status that somehow still confirmed the same
+reset would no longer be recognized. After the reset the sensor beacons again
+as unadopted and can be re-paired normally.
 
 ### `DEVICE_INFO_REPORT`
 
