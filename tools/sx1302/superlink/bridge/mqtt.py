@@ -12,7 +12,7 @@ from .entities import (
 from .events import (
     Event, PropertyEvent, DeviceInfoEvent, DeviceDiscovered, DeviceStateEvent,
     ButtonPressed, LinkSignal, SetProperty, SetPropertyRaw, AdoptDevice, Locate,
-    Reboot, RequestDeviceInfo, FactoryReset,
+    Reboot, RequestDeviceInfo, FactoryReset, DeviceRemoved,
 )
 
 # Command-button name -> factory building the Action from a device MAC.
@@ -41,6 +41,10 @@ class MqttBridge:
         self.prefix = config.discovery_prefix
         self._discovery_done: set[str] = set()
         self._buttons_done: set[bytes] = set()   # macs with button discovery sent
+        # mac -> every retained topic published for that device (discovery
+        # configs and state). Retraction has to clear exactly these, so they
+        # are recorded at publish time rather than reconstructed later.
+        self._retained: dict[bytes, set[str]] = {}
         runtime.add_event_sink(self.on_event)
 
     # --- lifecycle ---
@@ -81,16 +85,40 @@ class MqttBridge:
         elif isinstance(event, LinkSignal):
             self._publish_link_signal(event)
         elif isinstance(event, DeviceDiscovered):
-            self.client.publish(f"{self.base}/discovered/{event.mac.hex()}",
-                                json.dumps({"channel": event.channel,
-                                            "first_seen": event.first_seen}),
-                                retain=True)
+            self._pub_retained(event.mac,
+                               f"{self.base}/discovered/{event.mac.hex()}",
+                               json.dumps({"channel": event.channel,
+                                           "first_seen": event.first_seen}))
         elif isinstance(event, DeviceStateEvent):
             state = "online" if event.state in ("adopted", "active") else "offline"
             if event.state in ("adopted", "active"):
                 self._publish_buttons(event.mac)
-            self.client.publish(f"{self.base}/{event.mac.hex()}/availability",
-                                state, retain=True)
+            self._pub_retained(event.mac,
+                               f"{self.base}/{event.mac.hex()}/availability",
+                               state)
+        elif isinstance(event, DeviceRemoved):
+            self._retract_device(event.mac)
+
+    def _pub_retained(self, mac: bytes, topic: str, payload) -> None:
+        """Publish a retained, device-scoped topic and remember it so
+        _retract_device can clear it later."""
+        self._retained.setdefault(mac, set()).add(topic)
+        self.client.publish(topic, payload, retain=True)
+
+    def _retract_device(self, mac: bytes) -> None:
+        """Clear every retained topic published for a device, so its HA
+        entities disappear instead of lingering as stale retained configs."""
+        topics = self._retained.pop(mac, set())
+        for topic in sorted(topics):
+            self.client.publish(topic, "", retain=True)
+        # Drop the once-only guards so a later re-adopt republishes discovery.
+        self._buttons_done.discard(mac)
+        machex = mac.hex()
+        for key in [k for k in self._discovery_done
+                    if k.startswith(f"{machex}_")]:
+            self._discovery_done.discard(key)
+        if topics:
+            log.info("retracted %d retained topics for %s", len(topics), machex)
 
     def _publish_buttons(self, mac: bytes) -> None:
         """Publish LOCATE/REBOOT/refresh button discovery once per device."""
@@ -100,7 +128,7 @@ class MqttBridge:
         for name in COMMAND_BUTTONS:
             topic, payload = button_discovery_config(
                 mac, name, self.base, self.prefix)
-            self.client.publish(topic, json.dumps(payload), retain=True)
+            self._pub_retained(mac, topic, json.dumps(payload))
 
     def _publish_link_signal(self, ev: LinkSignal) -> None:
         """Publish the gateway-measured RSSI (real dBm) as the SIGNAL sensor.
@@ -111,10 +139,10 @@ class MqttBridge:
             entity = entity_for("SIGNAL")
             topic, payload = discovery_config(
                 ev.mac, "SIGNAL", entity, self.base, self.prefix, unit="dBm")
-            self.client.publish(topic, json.dumps(payload), retain=True)
+            self._pub_retained(ev.mac, topic, json.dumps(payload))
             self._discovery_done.add(key)
-        self.client.publish(f"{self.base}/{machex}/SIGNAL",
-                            str(int(round(ev.rssi_dbm))), retain=True)
+        self._pub_retained(ev.mac, f"{self.base}/{machex}/SIGNAL",
+                           str(int(round(ev.rssi_dbm))))
 
     def _publish_button_press(self, ev: ButtonPressed) -> None:
         """Fire an HA `event` (a press trigger HA timestamps). No fake "off":
@@ -125,7 +153,7 @@ class MqttBridge:
             topic, payload = discovery_config(
                 ev.mac, PRESS_ENTITY_NAME, PRESS_ENTITY, self.base, self.prefix,
                 unit=None)
-            self.client.publish(topic, json.dumps(payload), retain=True)
+            self._pub_retained(ev.mac, topic, json.dumps(payload))
             self._discovery_done.add(key)
         self.client.publish(f"{self.base}/{machex}/{PRESS_ENTITY_NAME}",
                             json.dumps({"event_type": "press"}))
@@ -138,7 +166,7 @@ class MqttBridge:
             if key not in self._discovery_done:
                 topic, payload = discovery_config(ev.mac, ev.name, entity,
                                                   self.base, self.prefix, ev.unit)
-                self.client.publish(topic, json.dumps(payload), retain=True)
+                self._pub_retained(ev.mac, topic, json.dumps(payload))
                 self._discovery_done.add(key)
         if ev.decoded and isinstance(ev.value, bool):
             value = "ON" if ev.value else "OFF"
@@ -146,7 +174,7 @@ class MqttBridge:
             value = str(ev.value)
         else:
             value = ev.raw.hex()
-        self.client.publish(f"{self.base}/{machex}/{ev.name}", value, retain=True)
+        self._pub_retained(ev.mac, f"{self.base}/{machex}/{ev.name}", value)
 
     # --- inbound: MQTT -> actions ---
     def _paho_on_message(self, client, userdata, msg):

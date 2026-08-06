@@ -250,3 +250,62 @@ def test_factory_reset_button_discovery_published():
     payload = json.loads(cfg)
     assert payload["command_topic"] == f"superlink/{MH}/factory_reset/press"
     assert payload["name"] == "Factory reset"
+
+
+# --- entity retraction on device removal ---
+
+def _retracted(client, topic):
+    """True if the LAST publish to `topic` was an empty retained payload."""
+    for t, p, retain in reversed(client.published):
+        if t == topic:
+            return p == "" and retain
+    return False
+
+
+def test_device_removed_retracts_discovery_and_state():
+    from superlink.bridge.events import DeviceStateEvent, DeviceRemoved
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    bridge.on_event(PropertyEvent(mac=MAC, property_id=3, name="BATTERY",
+                                  channel=0, raw=b"\x64", value=100, unit="%",
+                                  decoded=True))
+    assert client.find(f"homeassistant/sensor/{MH}_BATTERY/config") is not None
+
+    bridge.on_event(DeviceRemoved(mac=MAC, reason="factory_reset"))
+    assert _retracted(client, f"homeassistant/sensor/{MH}_BATTERY/config")
+    assert _retracted(client, f"homeassistant/button/{MH}_locate/config")
+    assert _retracted(client, f"homeassistant/button/{MH}_factory_reset/config")
+    assert _retracted(client, f"superlink/{MH}/BATTERY")
+    assert _retracted(client, f"superlink/{MH}/availability")
+
+
+def test_device_removed_retracts_discovered_topic():
+    from superlink.bridge.events import DeviceRemoved
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceDiscovered(mac=MAC, channel=1, first_seen=1.0))
+    bridge.on_event(DeviceRemoved(mac=MAC, reason="factory_reset"))
+    assert _retracted(client, f"superlink/discovered/{MH}")
+
+
+def test_readopt_after_removal_republishes_discovery():
+    """Removal clears the once-only guards, so a device that is re-paired gets
+    its discovery configs published again instead of staying invisible."""
+    from superlink.bridge.events import DeviceStateEvent, DeviceRemoved
+    rt, client, bridge = _bridge()
+    bridge.start()
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    bridge.on_event(DeviceRemoved(mac=MAC, reason="factory_reset"))
+    bridge.on_event(DeviceStateEvent(mac=MAC, state="adopted"))
+    cfg = client.find(f"homeassistant/button/{MH}_locate/config")
+    assert cfg is not None and cfg != ""
+
+
+def test_removal_of_unknown_device_is_a_noop():
+    from superlink.bridge.events import DeviceRemoved
+    rt, client, bridge = _bridge()
+    bridge.start()
+    before = len(client.published)
+    bridge.on_event(DeviceRemoved(mac=MAC, reason="factory_reset"))
+    assert len(client.published) == before
